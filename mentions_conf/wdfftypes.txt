@@ -1,0 +1,3 @@
+@ => ALPHA
+\u0023 => ALPHA
++ => ALPHA

@@ -1,0 +1,64 @@
+services:
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: solr-zookeeper
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: mntr,conf,ruok
+    ports:
+      - "2181:2181"
+    volumes:
+      - zk_data:/data
+      - zk_datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  solr:
+    image: solr:9.8.1
+    container_name: solr-topic
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "8983:8983"
+    volumes:
+      - solr_data:/var/solr
+    environment:
+      ZK_HOST: zookeeper:2181
+      SOLR_HEAP: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8983/solr/admin/info/system"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+
+  solr-init:
+    image: alpine:3.20
+    container_name: solr-init
+    depends_on:
+      solr:
+        condition: service_healthy
+    volumes:
+      - ./mentions_conf:/opt/configsets/topic_conf:ro
+      - ./data:/opt/data:ro
+      - ./scripts/solr-init.sh:/opt/solr-init.sh:ro
+    entrypoint: ["/bin/sh", "/opt/solr-init.sh"]
+    environment:
+      SOLR_HOST: solr
+      SOLR_PORT: 8983
+      CONFIGSET_DIR: /opt/configsets/topic_conf
+      CONFIGSET_NAME: topic_conf
+      COLLECTION_NAME: topic_4777
+      NUM_SHARDS: 1
+      REPLICATION_FACTOR: 1
+      SAMPLE_FILE: /opt/data/sample-mentions.json
+    restart: "no"
+
+volumes:
+  solr_data:
+  zk_data:
+  zk_datalog:
