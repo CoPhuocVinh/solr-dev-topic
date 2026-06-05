@@ -23,6 +23,8 @@ No alias is created by this local bootstrap flow.
 ├── docker-compose.yml
 ├── data/
 │   └── sample-mentions.json
+├── docs/
+│   └── reshard-topic-collection-tech-spec.md
 ├── mentions_conf/
 │   ├── managed-schema.xml
 │   ├── solrconfig.xml
@@ -42,6 +44,72 @@ No alias is created by this local bootstrap flow.
 
 `mentions_conf/` keeps its local folder name, but the init script uploads its
 contents to ZooKeeper as configset `topic_conf`.
+
+## Topic resharding tech spec
+
+Tài liệu thiết kế cơ chế tự động reshard topic collection nằm ở:
+
+```text
+docs/reshard-topic-collection-tech-spec.md
+```
+
+Bối cảnh production đang phân tích:
+
+- Mỗi topic là một Solr collection riêng, ví dụ `topic_100001`.
+- Collection dùng `router.name=compositeId` và `uniqueKey=id`.
+- Production hiện tại chưa có alias, nhiều app đang read/write trực tiếp vào
+  collection name.
+- Khi topic lớn vượt ngưỡng, ví dụ khoảng 40M records, hệ thống cần tạo
+  collection version mới nhiều shard hơn, migrate dữ liệu, validate, rồi
+  cutover.
+
+Flow khuyến nghị:
+
+```text
+detect topic lớn
+  -> tính số shard mới
+  -> tạo target collection, ví dụ topic_100001_v2
+  -> full copy dữ liệu
+  -> delta sync bằng _version_ watermark
+  -> validate
+  -> cutover bằng alias/app routing
+  -> final reconcile
+  -> giữ old collection để rollback
+```
+
+Lưu ý quan trọng:
+
+- Vì production chưa có alias và nhiều app không đổi read/write được, phương án
+  thực tế có thể phải dùng shadow alias cùng tên collection trong lần cutover
+  đầu tiên.
+- Shadow alias giữ nguyên endpoint `/solr/topic_100001` cho app, nhưng làm old
+  physical collection bị alias che đi. Vì vậy lần đầu nên có write pause mạnh
+  khi cutover.
+- Từ lần reshard thứ 2 trở đi, alias đã tồn tại sẵn nên flow sạch hơn: update
+  alias từ `topic_100001_v2` sang `topic_100001_v3`. Có thể không pause nếu có
+  post-cutover reconcile và conflict policy dựa trên timestamp/application
+  version đáng tin.
+- `_version_` dùng được cho delta insert/update, nhưng không bắt được hard
+  delete. Nếu production có hard delete, cần soft delete, tombstone, hoặc
+  change log riêng.
+- Update chain hiện tại có `skipInsertIfExists=true`; migration/reconcile cần
+  một update path cho phép upsert nếu muốn ghi đè bản mới hơn.
+
+Research keywords:
+
+```text
+Solr shadow alias
+Solr alias same name as collection
+Solr collection alias hides collection
+Solr CREATEALIAS DELETEALIAS
+Solr followAliases true
+SolrCloud reindex collection with more shards
+SolrCloud splitshard vs reindex
+Solr cursorMark pagination
+Solr _version_ watermark delta sync
+Solr hard delete tombstone soft delete
+Solr update request processor chain upsert
+```
 
 ## Bootstrap flow
 
