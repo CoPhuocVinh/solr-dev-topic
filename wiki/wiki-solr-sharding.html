@@ -116,7 +116,7 @@
       <li>Tự động reshard topic collection trong SolrCloud 9 khi dữ liệu vượt ngưỡng, ví dụ topic đạt khoảng 40 triệu records.</li>
       <li>Production có nhiều app/service gọi trực tiếp <code>/solr/topic_xxx</code>, nên v1 không giả định đổi app endpoint.</li>
       <li>Lần cutover đầu tiên giữ endpoint cũ bằng <strong>shadow alias</strong>; từ lần 2 trở đi update alias sang collection version mới.</li>
-      <li>Tài liệu bao gồm schema topic collection, group alias, migration/reconcile, rollback, risks và REINDEXCOLLECTION research.</li>
+      <li>Tài liệu bao gồm schema topic collection, group alias, migration/reconcile, rollback, risks, SPLITSHARD research và REINDEXCOLLECTION research.</li>
     </ul>
     <p>
       <ac:image ac:align="center" ac:height="400">
@@ -589,7 +589,59 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
       <li>Group alias impacted queries nếu topic nằm trong group alias.</li>
     </ul>
     <h2>
-      <strong>11. REINDEXCOLLECTION Research</strong>
+      <strong>11. SPLITSHARD Research</strong>
+    </h2>
+    <p><code>SPLITSHARD</code> là Collections API built-in của Solr để split một shard hiện có thành các sub-shards nhỏ hơn.</p>
+    <p>Ví dụ V1 API:</p>
+    <ac:structured-macro ac:macro-id="4c5f9212-6798-4fc6-9341-39ec853b9225" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=SPLITSHARD&collection=topic_100001&shard=shard1&async=split-topic-100001-shard1]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>Ví dụ V2 API:</p>
+    <ac:structured-macro ac:macro-id="63fc8388-c5ce-4608-9c02-2684c759fcf2" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[POST /api/collections/topic_100001/shards
+{
+  "split": {
+    "shard": "shard1",
+    "async": "split-topic-100001-shard1"
+  }
+}]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h3>
+      <strong>Cơ chế</strong>
+    </h3>
+    <ul>
+      <li>Solr chia hash range của shard gốc thành các sub-ranges nhỏ hơn.</li>
+      <li>Documents trong shard gốc được phân phối sang sub-shards theo hash range mới.</li>
+      <li>Original shard vẫn giữ data as-is, nhưng sau split request được route sang sub-shards.</li>
+      <li>Sub-shards mới có số replica tương tự shard gốc.</li>
+      <li>Có thể chạy async và track bằng <code>REQUESTSTATUS</code>.</li>
+      <li>Dùng được cho collection tạo bằng <code>numShards</code>, tức hash-based routing như <code>compositeId</code>.</li>
+    </ul>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Pros</th>
+          <th>Cons</th>
+        </tr>
+        <tr>
+          <td>Built-in trong Solr; không cần tự viết full copy worker; không cần đổi app endpoint vì vẫn là cùng collection; Solr tự xử lý hash range split.</td>
+          <td>In-place operation trên production collection; rollback khó hơn alias switch; không có target collection riêng để validate trước cutover; không giúp chuyển sang alias model; ít kiểm soát DB history, delta sync, reconcile và conflict policy; topic 40M docs có thể ảnh hưởng IO/CPU/recovery/latency.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Kết luận: SPLITSHARD đáng PoC/staging research; production chính vẫn nên dùng custom migration nếu cần rollback nhanh, validate trước cutover và chuyển sang alias model.</p>
+    <p>PoC tối thiểu:</p>
+    <ac:structured-macro ac:macro-id="a720f10a-09b1-45ce-bbe0-ef1af171a259" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[SPLITSHARD topic_4777 shard1
+track async status
+measure IO / query latency / update latency / recovery time / replica health
+validate docs still queryable]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>12. REINDEXCOLLECTION Research</strong>
     </h2>
     <p>
       <strong>
@@ -614,7 +666,7 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
     </table>
     <p>Kết luận: dùng cho PoC/staging research; production chính nên dùng custom migration nếu topic vẫn nhận writes liên tục.</p>
     <h2>
-      <strong>12. DB History</strong>
+      <strong>13. DB History</strong>
     </h2>
     <p>
       <strong>
@@ -624,7 +676,7 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
       </strong>
     </p>
     <h3>
-      <strong>12.1 topic_reshard_runs</strong>
+      <strong>13.1 topic_reshard_runs</strong>
     </h3>
     <table class="wrapped">
       <tbody>
@@ -722,11 +774,11 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
       </tbody>
     </table>
     <h3>
-      <strong>12.2 topic_reshard_events</strong>
+      <strong>13.2 topic_reshard_events</strong>
     </h3>
     <p>Events nên lưu: <code>DETECTED</code>, <code>TARGET_CREATE_REQUESTED</code>, <code>TARGET_CREATE_SUCCEEDED</code>, <code>FULL_COPY_BATCH_DONE</code>, <code>DELTA_BATCH_DONE</code>, <code>VALIDATION_FAILED</code>, <code>CUTOVER_ALIAS_UPDATED</code>, <code>RECONCILE_DONE</code>, <code>ROLLBACK_ALIAS_UPDATED</code>, <code>DONE</code>, <code>FAILED</code>.</p>
     <h2>
-      <strong>13. Risks Và Mitigations</strong>
+      <strong>14. Risks Và Mitigations</strong>
     </h2>
     <table class="wrapped">
       <tbody>
@@ -762,6 +814,11 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
           <td>Dùng migration upsert endpoint/chain riêng</td>
         </tr>
         <tr>
+          <td>SPLITSHARD in-place operation</td>
+          <td>Split tác động trực tiếp collection production, rollback khó hơn alias switch</td>
+          <td>Chỉ PoC/staging trước; nếu dùng production thì maintenance window, async request, monitor IO/latency/recovery</td>
+        </tr>
+        <tr>
           <td>Group alias đổi data ngầm</td>
           <td>Group alias đọc current version sau cutover topic con</td>
           <td>Audit <code>LISTALIASES</code>, validate group alias, ghi policy rõ</td>
@@ -784,7 +841,7 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
       </tbody>
     </table>
     <h2>
-      <strong>14. Research Checklist</strong>
+      <strong>15. Research Checklist</strong>
     </h2>
     <ul>
       <li>Có chấp nhận shadow alias lần đầu không?</li>
@@ -796,15 +853,16 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
       <li>Group aliases hiện đang dùng logical topic names hay physical collection names?</li>
       <li>Có app nào write vào group alias nhiều collections không?</li>
       <li>Có cần <code>ExactStatsCache</code> cho query qua alias nhiều collections không?</li>
+      <li>SPLITSHARD có cần PoC trên <code>topic_4777</code> hoặc staging để đo IO/latency/recovery không?</li>
       <li>REINDEXCOLLECTION có thể PoC trên staging không?</li>
       <li>DB history dùng DB nào?</li>
       <li>Scheduler/worker runtime dùng gì?</li>
       <li>Retention old collection là bao lâu?</li>
     </ul>
     <h2>
-      <strong>15. Kết Luận</strong>
+      <strong>16. Kết Luận</strong>
     </h2>
-    <p>Production v1 nên dùng custom migration thay vì split shard trực tiếp hoặc REINDEXCOLLECTION.</p>
+    <p>Production v1 nên dùng custom migration thay vì SPLITSHARD trực tiếp hoặc REINDEXCOLLECTION.</p>
     <ac:structured-macro ac:macro-id="f80794ba-488a-4175-96b7-23ccbd96b28e" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[Lần init:

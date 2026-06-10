@@ -537,7 +537,70 @@ Checklist:
 - Alias mapping.
 - Group alias impacted queries nếu topic nằm trong group alias.
 
-## 11. REINDEXCOLLECTION Research
+## 11. SPLITSHARD Research
+
+`SPLITSHARD` là Collections API built-in của Solr để split một shard hiện có thành các sub-shards nhỏ hơn.
+
+Ví dụ API:
+
+```text
+GET /solr/admin/collections?action=SPLITSHARD&collection=topic_100001&shard=shard1&async=split-topic-100001-shard1
+```
+
+Hoặc V2 API:
+
+```text
+POST /api/collections/topic_100001/shards
+{
+  "split": {
+    "shard": "shard1",
+    "async": "split-topic-100001-shard1"
+  }
+}
+```
+
+Cơ chế:
+
+- Solr chia hash range của shard gốc thành các sub-ranges nhỏ hơn.
+- Documents trong shard gốc được phân phối sang sub-shards theo hash range mới.
+- Original shard vẫn giữ data as-is, nhưng sau split request được route sang sub-shards.
+- Sub-shards mới có số replica tương tự shard gốc.
+- Có thể chạy async và track bằng `REQUESTSTATUS`.
+- Dùng được cho collection tạo bằng `numShards`, tức hash-based routing như `compositeId`.
+
+Pros:
+
+- Built-in trong Solr.
+- Không cần tự viết full copy worker.
+- Không cần đổi app endpoint vì vẫn là cùng collection.
+- Solr tự xử lý hash range split.
+
+Cons:
+
+- Là in-place operation trên production collection.
+- Rollback khó hơn alias switch.
+- Không có target collection riêng để validate trước cutover.
+- Không giúp chuyển production sang alias model.
+- Ít kiểm soát DB history, delta sync, reconcile và conflict policy.
+- Với topic 40M docs có thể ảnh hưởng disk IO, CPU, recovery và query/update latency.
+
+Kết luận:
+
+```text
+SPLITSHARD đáng PoC/staging research.
+Production chính vẫn nên dùng custom migration nếu cần rollback nhanh, validate trước cutover và chuyển sang alias model.
+```
+
+PoC tối thiểu:
+
+```text
+SPLITSHARD topic_4777 shard1
+track async status
+measure IO / query latency / update latency / recovery time / replica health
+validate docs still queryable
+```
+
+## 12. REINDEXCOLLECTION Research
 
 `REINDEXCOLLECTION` là option built-in đáng research/PoC, nhưng không nên chọn làm production flow chính nếu topic vẫn nhận writes liên tục.
 
@@ -561,9 +624,9 @@ REINDEXCOLLECTION phù hợp để PoC/staging research.
 Production chính nên dùng custom migration nếu topic vẫn nhận writes liên tục.
 ```
 
-## 12. DB History
+## 13. DB History
 
-### 12.1 `topic_reshard_runs`
+### 13.1 `topic_reshard_runs`
 
 | Field | Ý nghĩa |
 |---|---|
@@ -585,7 +648,7 @@ Production chính nên dùng custom migration nếu topic vẫn nhận writes li
 | `finished_at` | Thời gian kết thúc |
 | `error_message` | Lỗi nếu có |
 
-### 12.2 `topic_reshard_events`
+### 13.2 `topic_reshard_events`
 
 Events nên lưu:
 
@@ -601,7 +664,7 @@ Events nên lưu:
 - `DONE`
 - `FAILED`
 
-## 13. Risks Và Mitigations
+## 14. Risks Và Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
@@ -610,12 +673,13 @@ Events nên lưu:
 | No-pause reconcile stale overwrite | Bản cũ overwrite bản mới | Không blind upsert, compare bằng timestamp/version đáng tin |
 | `_version_` không bắt hard delete | Target giữ docs đã bị xóa | Soft delete/tombstone/change log/cấm hard delete |
 | Update chain skip existing | Reconcile bỏ sót update mới hơn | Dùng migration upsert endpoint/chain riêng |
+| SPLITSHARD in-place operation | Split tác động trực tiếp collection production, rollback khó hơn alias switch | Chỉ PoC/staging trước; nếu dùng production thì maintenance window, async request, monitor IO/latency/recovery |
 | Group alias đổi data ngầm | Group alias đọc current version sau cutover topic con | Audit `LISTALIASES`, validate group alias, ghi policy rõ |
 | Alias nhiều collections ảnh hưởng scoring | Ranking/relevance có thể lệch | Research `ExactStatsCache` nếu ranking quan trọng |
 | Full copy 40M docs tốn tài nguyên | Tăng load Solr/network/heap | Batch size, rate limit, off-peak, retry/backoff |
 | REINDEXCOLLECTION read-only lâu | Write downtime dài | Chỉ PoC/research nếu không chấp nhận read-only lâu |
 
-## 14. Research Checklist
+## 15. Research Checklist
 
 - Có chấp nhận shadow alias lần đầu không?
 - Pause write lần đầu được bao lâu?
@@ -625,14 +689,15 @@ Events nên lưu:
 - Group aliases hiện đang dùng logical topic names hay physical collection names?
 - Có app nào write vào group alias nhiều collections không?
 - Có cần `ExactStatsCache` cho query qua alias nhiều collections không?
+- SPLITSHARD có cần PoC trên `topic_4777` hoặc staging để đo IO/latency/recovery không?
 - REINDEXCOLLECTION có thể PoC trên staging không?
 - DB history dùng DB nào?
 - Scheduler/worker runtime dùng gì?
 - Retention old collection là bao lâu?
 
-## 15. Kết Luận
+## 16. Kết Luận
 
-Production v1 nên dùng custom migration thay vì split shard trực tiếp hoặc REINDEXCOLLECTION.
+Production v1 nên dùng custom migration thay vì SPLITSHARD trực tiếp hoặc REINDEXCOLLECTION.
 
 Khuyến nghị:
 

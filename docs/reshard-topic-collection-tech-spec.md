@@ -891,7 +891,68 @@ Write consistency mới là điểm khó:
 - Từ lần 2 có thể không pause nếu có post-cutover reconcile và compare-before-upsert bằng timestamp/version đáng tin.
 - Nếu không có timestamp/version đáng tin, vẫn nên pause write ngắn.
 
-## 11. Risks Và Mitigations
+## 11. SPLITSHARD Research
+
+`SPLITSHARD` là Collections API built-in của Solr để split một shard hiện có thành các sub-shards nhỏ hơn.
+
+Ví dụ API:
+
+```text
+GET /solr/admin/collections?action=SPLITSHARD&collection=topic_100001&shard=shard1&async=split-topic-100001-shard1
+```
+
+Hoặc V2 API:
+
+```text
+POST /api/collections/topic_100001/shards
+{
+  "split": {
+    "shard": "shard1",
+    "async": "split-topic-100001-shard1"
+  }
+}
+```
+
+Theo Solr, `SPLITSHARD`:
+
+- Split một shard thành hai hoặc nhiều sub-shards mới.
+- Chia hash range của shard gốc thành các range nhỏ hơn.
+- Phân phối document trong shard gốc sang sub-shards theo hash range mới.
+- Giữ original shard data as-is, nhưng sau split request sẽ được route sang sub-shards mới.
+- Tạo sub-shards mới với số replica tương tự shard gốc.
+- Có thể chạy async và track bằng `REQUESTSTATUS`.
+- Chỉ dùng cho SolrCloud collections tạo bằng `numShards`, tức hash-based routing như `compositeId`.
+
+### 11.1 Pros
+
+- Built-in trong Solr, không cần tự viết full copy worker.
+- Không cần đổi app endpoint vì vẫn là cùng collection.
+- Solr tự xử lý hash range split và routing sang sub-shards.
+- Có thể phù hợp cho local PoC, staging, hoặc maintenance window.
+
+### 11.2 Cons
+
+- Là in-place operation trên production collection đang phục vụ query/update.
+- Rollback khó hơn alias switch vì collection topology đã bị thay đổi.
+- Không có target collection riêng để validate đầy đủ trước khi production traffic đi vào topology mới.
+- Không giúp chuyển production sang alias model.
+- Ít kiểm soát DB history, batch progress, delta sync, reconcile và conflict policy hơn custom migration.
+- Operation nặng về disk IO, CPU, replica recovery và cluster state; với topic 40M docs có thể ảnh hưởng latency.
+
+### 11.3 Kết luận
+
+`SPLITSHARD` đáng để PoC và đo thực tế, nhưng không nên là production flow chính cho v1 nếu mục tiêu là rollback nhanh, validate trước cutover, chuyển sang alias model và kiểm soát migrate/reconcile.
+
+PoC tối thiểu nên chạy trên local/staging:
+
+```text
+SPLITSHARD topic_4777 shard1
+track async status
+measure IO / query latency / update latency / recovery time / replica health
+validate docs still queryable
+```
+
+## 12. Risks Và Mitigations
 
 ### Risk 1: Production chưa có alias và app không đổi endpoint được
 
@@ -929,7 +990,21 @@ Mitigation:
 
 - Dùng migration update handler/chain riêng cho upsert.
 
-### Risk 4: Full copy 40M docs tốn tài nguyên
+### Risk 4: SPLITSHARD in-place operation
+
+Impact:
+
+- Split chạy trực tiếp trên collection đang phục vụ production traffic.
+- Nếu split nặng hoặc replica recovery chậm, query/update latency có thể tăng.
+- Rollback khó hơn custom migration vì không chỉ là alias switch.
+
+Mitigation:
+
+- Chỉ PoC/staging trước khi cân nhắc production.
+- Nếu dùng production, chạy trong maintenance window và dùng async request.
+- Monitor IO, CPU, heap, GC, query/update latency, shard state và replica recovery.
+
+### Risk 5: Full copy 40M docs tốn tài nguyên
 
 Impact:
 
@@ -945,7 +1020,7 @@ Mitigation:
 - Retry/backoff.
 - Theo dõi QPS, latency, heap, GC, replica health.
 
-### Risk 5: Rollback sau khi new đã nhận writes
+### Risk 6: Rollback sau khi new đã nhận writes
 
 Impact:
 
@@ -959,7 +1034,7 @@ Mitigation:
 - Dual-write tạm thời.
 - Định nghĩa rollback window ngắn.
 
-### Risk 6: Không pause từ lần 2 có thể stale overwrite
+### Risk 7: Không pause từ lần 2 có thể stale overwrite
 
 Impact:
 
@@ -971,7 +1046,7 @@ Mitigation:
 - Dùng application timestamp/version đáng tin để compare-before-upsert.
 - Nếu không có timestamp/version đáng tin, vẫn nên pause ngắn ở cutover.
 
-### Risk 7: Validation không đủ sau migrate
+### Risk 8: Validation không đủ sau migrate
 
 Impact:
 
@@ -983,7 +1058,7 @@ Mitigation:
 - Lưu validation result vào DB.
 - Không cho cutover nếu validation fail.
 
-### Risk 8: Group alias bị đổi dữ liệu ngầm sau cutover topic con
+### Risk 9: Group alias bị đổi dữ liệu ngầm sau cutover topic con
 
 Impact:
 
@@ -999,7 +1074,7 @@ Mitigation:
 - Không dùng standard group alias nhiều collections cho update/write.
 - Tránh dùng `followAliases=true` với collection admin commands trong case multi-level alias + shadow alias.
 
-## 12. Execution Phases
+## 13. Execution Phases
 
 ### Phase 1: Design và local PoC
 
@@ -1070,7 +1145,7 @@ Exit criteria:
 - Old collection được giữ theo retention.
 - Metrics và alert hoạt động.
 
-## 13. Operational Metrics
+## 14. Operational Metrics
 
 Cần expose/log:
 
@@ -1102,7 +1177,7 @@ cutover failed
 rollback triggered
 ```
 
-## 14. Acceptance Criteria
+## 15. Acceptance Criteria
 
 Cho topic example `topic_100001`:
 
@@ -1120,7 +1195,7 @@ And first rollback can delete shadow alias within defined rollback window
 And later reshard runs can update alias from vN to vN+1
 ```
 
-## 15. Open Decisions
+## 16. Open Decisions
 
 Cần chốt trước khi implement production:
 
@@ -1134,8 +1209,9 @@ Cần chốt trước khi implement production:
 8. Từ lần 2 có cho phép không pause không, và nếu có thì dùng field nào làm conflict policy?
 9. Group alias policy sẽ dùng logical topic aliases hay physical collection versions?
 10. Cutover v1 manual approval hay auto-cutover?
+11. Có cần PoC `SPLITSHARD` trên `topic_4777` hoặc staging để đo IO/latency/recovery không?
 
-## 16. Research Keywords
+## 17. Research Keywords
 
 ```text
 Solr shadow alias
@@ -1149,6 +1225,8 @@ Solr CREATEALIAS DELETEALIAS
 Solr followAliases true
 SolrCloud reindex collection with more shards
 SolrCloud splitshard vs reindex
+Solr SPLITSHARD hash range split
+Solr SPLITSHARD in-place operation
 Solr cursorMark pagination
 Solr _version_ watermark delta sync
 Solr hard delete tombstone soft delete
@@ -1157,9 +1235,10 @@ Solr post cutover reconcile
 Solr alias cutover zero downtime
 ```
 
-## 17. References
+## 18. References
 
 - Solr Collection Management: https://solr.apache.org/guide/solr/latest/deployment-guide/collection-management.html
 - Solr Aliases: https://solr.apache.org/guide/solr/latest/deployment-guide/aliases.html
+- Solr Shard Management Commands: https://solr.apache.org/guide/solr/latest/deployment-guide/shard-management.html
 - Solr Cursor Pagination: https://solr.apache.org/guide/solr/latest/query-guide/pagination-of-results.html
 - Solr Partial Updates and `_version_`: https://solr.apache.org/guide/solr/latest/indexing-guide/partial-document-updates.html
