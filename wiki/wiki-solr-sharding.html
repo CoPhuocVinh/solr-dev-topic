@@ -109,7 +109,7 @@
     <ul>
       <li>Tự động reshard topic collection trong SolrCloud 9 khi dữ liệu vượt ngưỡng, ví dụ topic đạt khoảng 40 triệu records.</li>
       <li>Production có nhiều app/service gọi trực tiếp <code>/solr/topic_xxx</code>, nên v1 không giả định đổi app endpoint.</li>
-      <li>Hướng chính là custom migration: tạo target collection version mới, full copy, delta sync, validate, rồi cutover.</li>
+      <li>Hướng chính là custom migration: tạo target collection version mới, copy bằng <code>_version_</code> cursor, validate, rồi cutover.</li>
       <li>Lần cutover đầu tiên giữ endpoint cũ bằng <strong>shadow alias</strong>; từ lần 2 trở đi update alias sang collection version mới.</li>
       <li>Validate physical old vs physical new phải chạy trước cutover alias.</li>
       <li>Giữ old collection theo retention policy để rollback.</li>
@@ -241,19 +241,12 @@
         </ul>
       </li>
       <li>
-        <p><strong>Capture initial watermark</strong></p>
+        <p><strong>Copy by _version_ cursor</strong></p>
         <ul>
-          <li><strong>Action:</strong> lấy <code>max(_version_)</code> từ source trước full copy.</li>
-          <li><strong>Output:</strong> có <code>initial_watermark</code> và <code>last_watermark</code> ban đầu.</li>
-          <li><strong>Persist:</strong> lưu watermark vào DB run để delta sync resume được.</li>
-        </ul>
-      </li>
-      <li>
-        <p><strong>Full copy by cursor</strong></p>
-        <ul>
-          <li><strong>Action:</strong> query source bằng <code>cursorMark</code>, sort <code>id asc</code>, upsert vào target.</li>
+          <li><strong>Action:</strong> query source bằng <code>cursorMark</code>, sort <code>_version_ asc,id asc</code>, upsert vào target.</li>
           <li><strong>Action:</strong> không copy <code>_version_</code> từ source sang target.</li>
-          <li><strong>Output:</strong> target có baseline docs từ source.</li>
+          <li><strong>Output:</strong> target bắt được docs theo thứ tự version tăng dần, gồm cả docs mới phát sinh trong lúc copy.</li>
+          <li><strong>Persist:</strong> lưu <code>full_copy_cursor</code>, <code>last_seen_version</code> và copied count.</li>
         </ul>
       </li>
       <li>
@@ -265,11 +258,11 @@
         </ul>
       </li>
       <li>
-        <p><strong>Delta sync by _version_</strong></p>
+        <p><strong>Pause and final cursor check</strong></p>
         <ul>
-          <li><strong>Action:</strong> sync docs bằng query <code>_version_:{last_watermark TO *]</code>.</li>
-          <li><strong>Output:</strong> target bắt được insert/update phát sinh trong lúc full copy.</li>
-          <li><strong>Persist:</strong> update <code>last_watermark</code> sau mỗi batch delta.</li>
+          <li><strong>Action:</strong> pause/block writes ngắn rồi resume cursor từ progress cuối cùng.</li>
+          <li><strong>Output:</strong> nếu cursor không trả thêm docs mới, target đã bắt kịp source.</li>
+          <li><strong>Persist:</strong> lưu final copied count và final cursor state trước validate.</li>
         </ul>
       </li>
       <li>
@@ -297,7 +290,7 @@
         </ul>
       </li>
     </ol>
-    <p><strong>Note:</strong> diagram có thể biểu diễn alias cutover gần validate, nhưng runbook production phải enforce <code>validate before alias cutover</code>.</p>
+    <p><strong>Note:</strong> diagram có thể chưa phản ánh đúng flow mới; runbook production phải enforce <code>copy by _version_ cursor -> pause/final cursor check -> validate before alias cutover</code>.</p>
     <h2>
       <strong>D.3 Queue Payload</strong>
     </h2>
@@ -327,7 +320,7 @@
     <ul>
       <li>Tự động detect topic lớn cần tăng shard.</li>
       <li>Tạo collection version mới với số shard phù hợp hơn.</li>
-      <li>Migrate dữ liệu bằng full copy + delta sync.</li>
+      <li>Migrate dữ liệu bằng copy theo <code>_version_</code> cursor.</li>
       <li>Validate dữ liệu trước cutover.</li>
       <li>Giữ endpoint cũ <code>/solr/topic_xxx</code> cho các app hiện tại.</li>
       <li>Cutover an toàn bằng alias và giữ old collection để rollback.</li>
@@ -341,12 +334,10 @@
       <li>Nightly detect topic vượt ngưỡng.</li>
       <li>Tính số shard cần thiết.</li>
       <li>Tạo target collection version mới, ví dụ <code>topic_100001_v2</code>.</li>
-      <li>Capture initial <code>_version_</code> watermark.</li>
-      <li>Full copy old -&gt; new.</li>
-      <li>Delta sync old -&gt; new.</li>
+      <li>Copy old -&gt; new bằng <code>_version_</code> cursor.</li>
+      <li>Pause/block writes ngắn trong window validate/cutover.</li>
       <li>Validate old vs new.</li>
       <li>Cutover bằng shadow alias hoặc alias switch.</li>
-      <li>Reconcile nếu cần.</li>
       <li>Giữ old collection để rollback.</li>
     </ol>
     <ac:structured-macro ac:macro-id="e78115d7-f2af-4726-9b84-552eeb8af080" ac:name="code" ac:schema-version="1">
@@ -394,14 +385,13 @@ app:
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[1. Detect topic_100001 đạt ngưỡng.
 2. Tạo physical collection mới topic_100001_v2 với số shard mới.
-3. Full copy topic_100001 -> topic_100001_v2.
-4. Delta sync bằng _version_ watermark.
-5. Kéo delta backlog về gần 0.
-6. Pause/block writes mạnh cho topic_100001.
-7. Final sync topic_100001 -> topic_100001_v2.
-8. Validate physical old vs physical new.
-9. Create shadow alias topic_100001 -> topic_100001_v2.
-10. Resume writes.]]></ac:plain-text-body>
+3. Copy topic_100001 -> topic_100001_v2 bằng _version_ cursor.
+4. Persist cursor/progress vào DB history để resume được.
+5. Pause/block writes ngắn cho topic_100001.
+6. Final cursor check để đảm bảo target đã bắt kịp source.
+7. Validate physical old vs physical new.
+8. Create shadow alias topic_100001 -> topic_100001_v2.
+9. Resume writes.]]></ac:plain-text-body>
     </ac:structured-macro>
     <h3>
       <strong>E.3.3 After state</strong>
@@ -447,13 +437,13 @@ rollback: update alias topic_100001 -> topic_100001_vN]]></ac:plain-text-body>
       <strong>E.5 Cutover Modes</strong>
     </h2>
     <ul>
-      <li><strong>Strong consistency:</strong> pause write ngắn, final delta sync, validate nhanh, update alias, resume write.</li>
-      <li><strong>Eventual consistency:</strong> delta sync đến khi backlog nhỏ, capture watermark, update alias, post-cutover reconcile source -&gt; target, validate lại.</li>
+      <li><strong>Strong consistency:</strong> copy theo <code>_version_</code> cursor, pause/block writes ngắn, final cursor check, validate new = old, update alias, resume write.</li>
+      <li><strong>Eventual consistency:</strong> chỉ nên dùng nếu có change log hoặc conflict policy đáng tin; copy theo cursor đến khi target bắt kịp source, update alias không pause, reconcile bằng application version rồi validate lại.</li>
     </ul>
     <h2>
-      <strong>E.6 No-Pause Reconcile</strong>
+      <strong>E.6 No-Pause Reconcile Risk</strong>
     </h2>
-    <p>Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.</p>
+    <p>Đây không phải main flow production v1. Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.</p>
     <p>
       <ac:image ac:align="center" ac:height="400">
         <ri:attachment ri:filename="05-no-pause-reconcile-race.png"/>
@@ -492,7 +482,7 @@ else:
   <span style="color: rgb(51,102,255);"> <strong>F. Data Migration Mechanics</strong> </span>
 </h1>
 <ac:structured-macro ac:macro-id="fead8985-5ce4-45e7-93be-69dabe8d2896" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Full copy, delta sync, validation</ac:parameter>
+  <ac:parameter ac:name="title">Version cursor copy and validation</ac:parameter>
   <ac:rich-text-body>
     <p>
       <strong>
@@ -502,57 +492,46 @@ else:
       </strong>
     </p>
     <h2>
-      <strong>F.1 Capture Watermark</strong>
-    </h2>
-    <p>Trước full copy, capture watermark từ source để bắt các insert/update phát sinh trong lúc copy.</p>
-    <ac:structured-macro ac:macro-id="3f884c70-74a8-4ff6-bc33-36da6d159bf7" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[q=*:*
-rows=1
-sort=_version_ desc
-fl=_version_
-
-initial_watermark = max_old_version_before_full_copy
-last_watermark = initial_watermark]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>F.2 Full Copy By Cursor</strong>
+      <strong>F.1 Copy By _version_ Cursor</strong>
     </h2>
     <ul>
       <li>Dùng cursor pagination.</li>
-      <li>Sort ổn định theo <code>id asc</code>.</li>
+      <li>Sort theo <code>_version_ asc,id asc</code> để worker đi theo thứ tự version tăng dần.</li>
       <li>Batch size configurable.</li>
       <li>Không copy <code>_version_</code> sang target.</li>
       <li>Chỉ copy stored fields khi dùng <code>/select</code>.</li>
       <li>Copy fields/indexed-only fields được regenerate bởi schema target.</li>
+      <li>Persist <code>full_copy_cursor</code>, <code>last_seen_version</code>, copied count để resume được.</li>
     </ul>
     <ac:structured-macro ac:macro-id="05125439-4754-45ae-8f31-868e12385013" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[q=*:*
-sort=id asc
+sort=_version_ asc,id asc
 cursorMark=*
 rows=1000]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>F.3 Delta Sync By _version_</strong>
+      <strong>F.2 Final Cursor Check</strong>
     </h2>
-    <p>Sau full copy, sync các docs có <code>_version_ &gt; last_watermark</code> từ source sang target.</p>
+    <p>Trước validate/cutover, pause/block writes ngắn rồi resume cursor từ progress cuối cùng để đảm bảo target đã bắt kịp source.</p>
     <ac:structured-macro ac:macro-id="60fe4e63-0e1c-44b8-94e1-1691c3efb955" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[q=_version_:{last_watermark TO *]
+      <ac:plain-text-body><![CDATA[q=*:*
 sort=_version_ asc,id asc
+cursorMark=<last_cursor>
+rows=1000
 
-read docs where _version_ > last_watermark
-upsert into target
-update last_watermark
-persist progress]]></ac:plain-text-body>
+if no new docs:
+  validate
+else:
+  copy final batch and persist progress]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>F.4 Deletes Handling</strong>
+      <strong>F.3 Deletes Handling</strong>
     </h2>
-    <p><code>_version_</code> không bắt được hard delete. Cần soft delete, tombstone table, change log từ DB/app hoặc cấm hard delete trong migration window.</p>
+    <p><code>_version_</code> cursor không bắt được hard delete nếu doc đã biến mất khỏi source trước khi worker đọc tới. Cần soft delete, tombstone table, change log từ DB/app hoặc cấm hard delete trong migration window.</p>
     <h2>
-      <strong>F.5 Validate Physical Old Vs Physical New</strong>
+      <strong>F.4 Validate Physical Old Vs Physical New</strong>
     </h2>
     <ul>
       <li>Count source vs target.</li>
@@ -614,7 +593,7 @@ required fields chính: id, domain]]></ac:plain-text-body>
         </tr>
         <tr>
           <td><code>id</code></td>
-          <td>Unique key, indexed/stored, dùng để sort ổn định khi full copy bằng cursor.</td>
+          <td>Unique key, indexed/stored, dùng làm tie-breaker khi copy bằng <code>_version_</code> cursor.</td>
         </tr>
         <tr>
           <td><code>domain</code></td>
@@ -622,7 +601,7 @@ required fields chính: id, domain]]></ac:plain-text-body>
         </tr>
         <tr>
           <td><code>_version_</code></td>
-          <td>Indexed/stored, dùng làm technical watermark cho delta insert/update.</td>
+          <td>Indexed/stored, dùng để sort copy theo version cursor.</td>
         </tr>
         <tr>
           <td><code>updated_at</code></td>
@@ -646,7 +625,7 @@ required fields chính: id, domain]]></ac:plain-text-body>
         </tr>
       </tbody>
     </table>
-    <p>Một số field <code>stored=false</code>: <code>search_text_exactly</code>, <code>sound_exactly</code>, <code>effect_exactly</code>. Khi full copy bằng <code>/select</code>, các field này không lấy trực tiếp được và cần regenerate bằng <code>copyField</code>.</p>
+    <p>Một số field <code>stored=false</code>: <code>search_text_exactly</code>, <code>sound_exactly</code>, <code>effect_exactly</code>. Khi copy bằng <code>/select</code>, các field này không lấy trực tiếp được và cần regenerate bằng <code>copyField</code>.</p>
     <ac:structured-macro ac:macro-id="634c65f0-2a48-48f3-b5da-0bde9204a1f4" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[copyField:
@@ -793,8 +772,8 @@ aliases:
           <th>Cons</th>
         </tr>
         <tr>
-          <td>Built-in trong Solr; không cần tự viết full copy worker; không cần đổi app endpoint vì vẫn là cùng collection; Solr tự xử lý hash range split.</td>
-          <td>In-place operation trên production collection; rollback khó hơn alias switch; không có target collection riêng để validate trước cutover; không giúp chuyển sang alias model; ít kiểm soát DB history, delta sync, reconcile và conflict policy; topic 40M docs có thể ảnh hưởng IO/CPU/recovery/latency.</td>
+          <td>Built-in trong Solr; không cần tự viết custom copy worker; không cần đổi app endpoint vì vẫn là cùng collection; Solr tự xử lý hash range split.</td>
+          <td>In-place operation trên production collection; rollback khó hơn alias switch; không có target collection riêng để validate trước cutover; không giúp chuyển sang alias model; ít kiểm soát DB history, copy cursor, validate và rollback policy; topic 40M docs có thể ảnh hưởng IO/CPU/recovery/latency.</td>
         </tr>
       </tbody>
     </table>
@@ -825,7 +804,7 @@ validate docs still queryable]]></ac:plain-text-body>
         </tr>
         <tr>
           <td>Built-in trong Solr; có thể tạo target collection với shard mới; có thể hỗ trợ reindex/cutover qua alias.</td>
-          <td>Source collection read-only trong lúc reindex; 40M docs có thể thành write pause dài; có thể lossy nếu field cần reindex không stored; ít kiểm soát delta/reconcile/history/rollback hơn custom migration.</td>
+          <td>Source collection read-only trong lúc reindex; 40M docs có thể thành write pause dài; có thể lossy nếu field cần reindex không stored; ít kiểm soát copy cursor, validate, DB history và rollback hơn custom migration.</td>
         </tr>
       </tbody>
     </table>
@@ -890,16 +869,16 @@ validate docs still queryable]]></ac:plain-text-body>
           <td>Trạng thái run</td>
         </tr>
         <tr>
-          <td><code>initial_watermark</code></td>
-          <td><code>_version_</code> watermark ban đầu</td>
-        </tr>
-        <tr>
-          <td><code>last_watermark</code></td>
-          <td>Watermark đã xử lý gần nhất</td>
-        </tr>
-        <tr>
           <td><code>full_copy_cursor</code></td>
-          <td>CursorMark để resume full copy</td>
+          <td>CursorMark để resume copy</td>
+        </tr>
+        <tr>
+          <td><code>last_seen_version</code></td>
+          <td><code>_version_</code> lớn nhất đã thấy trong quá trình copy</td>
+        </tr>
+        <tr>
+          <td><code>copied_count</code></td>
+          <td>Số docs đã copy sang target</td>
         </tr>
         <tr>
           <td><code>cutover_mode</code></td>
@@ -918,7 +897,7 @@ validate docs still queryable]]></ac:plain-text-body>
     <h3>
       <strong>I.1.2 topic_reshard_events</strong>
     </h3>
-    <p>Events nên lưu: <code>DETECTED</code>, <code>TARGET_CREATE_REQUESTED</code>, <code>TARGET_CREATE_SUCCEEDED</code>, <code>FULL_COPY_BATCH_DONE</code>, <code>DELTA_BATCH_DONE</code>, <code>VALIDATION_FAILED</code>, <code>CUTOVER_ALIAS_UPDATED</code>, <code>RECONCILE_DONE</code>, <code>ROLLBACK_ALIAS_UPDATED</code>, <code>DONE</code>, <code>FAILED</code>.</p>
+    <p>Events nên lưu: <code>DETECTED</code>, <code>TARGET_CREATE_REQUESTED</code>, <code>TARGET_CREATE_SUCCEEDED</code>, <code>COPY_BATCH_DONE</code>, <code>FINAL_CURSOR_CHECK_DONE</code>, <code>VALIDATION_FAILED</code>, <code>CUTOVER_ALIAS_UPDATED</code>, <code>RECONCILE_DONE</code>, <code>ROLLBACK_ALIAS_UPDATED</code>, <code>DONE</code>, <code>FAILED</code>.</p>
     <h2>
       <strong>I.2 Risks And Mitigations</strong>
     </h2>
@@ -940,12 +919,17 @@ validate docs still queryable]]></ac:plain-text-body>
           <td>Rollback window ngắn, pause write, replay log/dual-write nếu có</td>
         </tr>
         <tr>
-          <td>No-pause reconcile stale overwrite</td>
-          <td>Bản cũ overwrite bản mới</td>
-          <td>Không blind upsert, compare bằng timestamp/version đáng tin</td>
+          <td>Write phát sinh sau validate trước cutover</td>
+          <td>Target có thể thiếu write mới dù validate pass</td>
+          <td>Pause/block writes ngắn trong window validate + alias cutover</td>
         </tr>
         <tr>
-          <td><code>_version_</code> không bắt hard delete</td>
+          <td>No-pause reconcile stale overwrite</td>
+          <td>Bản cũ overwrite bản mới</td>
+          <td>Không blind upsert, compare bằng timestamp/application version đáng tin</td>
+        </tr>
+        <tr>
+          <td><code>_version_</code> cursor không bắt hard delete</td>
           <td>Target giữ docs đã bị xóa</td>
           <td>Soft delete/tombstone/change log/cấm hard delete</td>
         </tr>
@@ -970,7 +954,7 @@ validate docs still queryable]]></ac:plain-text-body>
           <td>Research <code>ExactStatsCache</code> nếu ranking quan trọng</td>
         </tr>
         <tr>
-          <td>Full copy 40M docs tốn tài nguyên</td>
+          <td>Copy 40M docs tốn tài nguyên</td>
           <td>Tăng load Solr/network/heap</td>
           <td>Batch size, rate limit, off-peak, retry/backoff</td>
         </tr>
@@ -1009,25 +993,25 @@ validate docs still queryable]]></ac:plain-text-body>
   <ac:rich-text-body>
     <ul>
       <li>Custom migration là hướng chính cho production v1 vì topic vẫn nhận writes liên tục.</li>
-      <li>Lần init dùng shadow alias + pause write mạnh để giữ nguyên endpoint <code>/solr/topic_100001</code>.</li>
+      <li>Lần init dùng shadow alias + pause/block writes ngắn khi validate/cutover để giữ nguyên endpoint <code>/solr/topic_100001</code>.</li>
       <li>Từ lần 2 trở đi, cutover sạch hơn bằng cách update alias sang collection version mới.</li>
-      <li>No-pause cutover chỉ nên dùng khi reconcile có conflict policy đáng tin.</li>
+      <li>No-pause cutover chỉ nên dùng khi có change log hoặc conflict policy đáng tin.</li>
       <li>Group alias cần audit trước/sau cutover, đặc biệt khi member là shadow alias.</li>
       <li>SPLITSHARD và REINDEXCOLLECTION chỉ nên dùng cho PoC/research trước khi cân nhắc production.</li>
     </ul>
     <ac:structured-macro ac:macro-id="1c023f07-a874-47d0-ba93-7df4f67e5773" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[Lần init:
-  custom full copy + delta sync
-  pause write mạnh
+  custom copy by _version_ cursor
+  pause/block writes ngắn khi validate + cutover
   create shadow alias topic_100001 -> topic_100001_v2
   rollback bằng DELETEALIAS
 
 Lần 2 trở đi:
-  custom full copy + delta sync
+  custom copy by _version_ cursor
   update alias topic_100001 -> topic_100001_vN+1
   rollback bằng update alias về version trước
-  có thể no-pause nếu reconcile có conflict policy đáng tin]]></ac:plain-text-body>
+  no-pause chỉ khi có change log/conflict policy đáng tin]]></ac:plain-text-body>
     </ac:structured-macro>
   </ac:rich-text-body>
 </ac:structured-macro>

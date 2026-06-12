@@ -8,7 +8,7 @@ Mục tiêu chính:
 
 - Tự động detect topic lớn cần tăng shard.
 - Tạo collection version mới với số shard phù hợp hơn.
-- Migrate dữ liệu bằng full copy + delta sync.
+- Migrate dữ liệu bằng copy theo `_version_` cursor.
 - Validate dữ liệu trước cutover.
 - Giữ endpoint cũ `/solr/topic_xxx` cho các app hiện tại.
 - Cutover an toàn bằng alias.
@@ -26,11 +26,10 @@ Flow tổng quát:
 detect topic lớn
 -> tính số shard mới
 -> tạo target collection version mới
--> full copy dữ liệu
--> delta sync bằng _version_ watermark
--> validate dữ liệu
+-> copy dữ liệu bằng _version_ cursor
+-> pause/block writes ngắn
+-> validate dữ liệu new = old
 -> cutover bằng shadow alias hoặc alias switch
--> reconcile nếu cần
 -> giữ old collection để rollback
 ```
 
@@ -86,9 +85,9 @@ Các field quan trọng cho reshard/migration:
 
 | Field | Ý nghĩa với migration |
 |---|---|
-| `id` | Unique key, indexed/stored, dùng để sort ổn định khi full copy bằng cursor. |
+| `id` | Unique key, indexed/stored, dùng làm tie-breaker khi copy bằng `_version_` cursor. |
 | `domain` | Required field chính trong schema. |
-| `_version_` | Indexed/stored, dùng làm technical watermark cho delta insert/update. |
+| `_version_` | Indexed/stored, dùng để sort copy theo version cursor. |
 | `updated_at` | Candidate timestamp cho conflict policy khi reconcile không pause. |
 | `man_updated_at` | Candidate timestamp khác cho manual/business updates. |
 | `copied_at` | Timestamp liên quan copy/index pipeline. |
@@ -103,7 +102,7 @@ sound_exactly
 effect_exactly
 ```
 
-Khi full copy bằng `/select`, các field `stored=false` không lấy trực tiếp được. Các field này cần được regenerate bằng `copyField`.
+Khi copy bằng `/select`, các field `stored=false` không lấy trực tiếp được. Các field này cần được regenerate bằng `copyField`.
 
 `copyField` hiện có:
 
@@ -139,13 +138,11 @@ Flow:
 1. Nightly detect topic vượt ngưỡng.
 2. Tính số shard cần thiết.
 3. Tạo target collection version mới, ví dụ topic_100001_v2.
-4. Capture initial _version_ watermark.
-5. Full copy old -> new.
-6. Delta sync old -> new.
-7. Validate old vs new.
-8. Cutover bằng shadow alias hoặc alias switch.
-9. Reconcile nếu cần.
-10. Giữ old collection để rollback.
+4. Copy old -> new bằng `_version_` cursor.
+5. Pause/block writes ngắn trong window validate/cutover.
+6. Validate old vs new.
+7. Cutover bằng shadow alias hoặc alias switch.
+8. Giữ old collection để rollback.
 ```
 
 Ví dụ:
@@ -170,10 +167,10 @@ Các bước implement tổng quát theo 2 layer detect/enqueue và worker/migra
 6. Push message vào queue `data.resharding_solr_topic`, mỗi message đại diện cho một topic cần reshard.
 7. Worker consume queue, lock theo `topic_id` hoặc `source_collection`, rồi check DB run/version.
 8. Create target collection version mới, ví dụ `topic_100001_v2`, preserve configset/router/replication policy từ source.
-9. Capture initial `_version_` watermark trước khi full copy.
-10. Full copy by cursor từ source sang target, sort ổn định theo `id asc`.
-11. Persist cursor/requeue nếu batch lớn hoặc worker cần pause/resume.
-12. Delta sync by `_version_` để bắt insert/update phát sinh trong lúc full copy.
+9. Copy by `_version_` cursor từ source sang target, sort theo `_version_ asc, id asc`.
+10. Persist cursor/requeue nếu batch lớn hoặc worker cần pause/resume.
+11. Pause/block writes ngắn trước validate/cutover.
+12. Final cursor check để đảm bảo không còn docs mới chưa copy.
 13. Validate physical old vs physical new trước khi cutover alias.
 14. Cutover alias: lần init dùng shadow alias, từ lần 2 trở đi update alias sang version mới.
 15. Mark done và retain old collection theo rollback/retention policy.
@@ -213,14 +210,13 @@ app:
 ```text
 1. Detect topic_100001 đạt ngưỡng.
 2. Tạo physical collection mới topic_100001_v2 với số shard mới.
-3. Full copy topic_100001 -> topic_100001_v2.
-4. Delta sync bằng _version_ watermark.
-5. Kéo delta backlog về gần 0.
-6. Pause/block writes mạnh cho topic_100001.
-7. Final sync topic_100001 -> topic_100001_v2.
-8. Validate physical old vs physical new.
-9. Create shadow alias topic_100001 -> topic_100001_v2.
-10. Resume writes.
+3. Copy topic_100001 -> topic_100001_v2 bằng _version_ cursor.
+4. Persist cursor/progress vào DB history để resume được.
+5. Pause/block writes ngắn cho topic_100001.
+6. Final cursor check để đảm bảo target đã bắt kịp source.
+7. Validate physical old vs physical new.
+8. Create shadow alias topic_100001 -> topic_100001_v2.
+9. Resume writes.
 ```
 
 ### 5.3 After state
@@ -304,9 +300,9 @@ rollback: update alias topic_100001 -> topic_100001_vN
 Strong consistency mode:
 
 ```text
-pause write ngắn
--> final delta sync
--> validate nhanh
+pause/block writes ngắn
+-> final cursor check
+-> validate new = old
 -> update alias
 -> resume write
 ```
@@ -314,19 +310,18 @@ pause write ngắn
 Eventual consistency mode:
 
 ```text
-delta sync đến khi backlog nhỏ
--> capture last_watermark_before_cutover
--> update alias
+copy theo _version_ cursor đến khi target bắt kịp source
+-> update alias không pause
 -> app writes mới vào target
--> post-cutover reconcile source -> target
+-> reconcile bằng change log/application version nếu có
 -> validate lại
 ```
 
-Từ lần 2 trở đi, no-pause mode khả thi hơn vì source physical version như `topic_100001_v2` vẫn gọi trực tiếp được sau alias switch.
+Khuyến nghị production v1 vẫn là pause/block writes ngắn khi validate và cutover. No-pause mode chỉ nên dùng nếu có change log hoặc conflict policy đáng tin.
 
-## 7. No-Pause Reconcile Từ Lần 2
+## 7. No-Pause Reconcile Risk Từ Lần 2
 
-Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.
+Đây không phải main flow production v1. Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.
 
 Race condition:
 
@@ -504,53 +499,43 @@ Nhược điểm:
 
 ## 10. Data Migration Details
 
-### 10.1 Full copy
+### 10.1 Copy by `_version_` cursor
 
 Khuyến nghị:
 
 - Dùng cursor pagination.
-- Sort ổn định theo `id asc`.
+- Sort theo `_version_ asc, id asc` để worker đi theo thứ tự version tăng dần.
 - Batch size configurable.
 - Không copy `_version_` sang target.
 - Chỉ copy stored fields khi dùng `/select`.
 - Các copy fields/indexed-only fields được regenerate bởi schema target.
+- Persist `full_copy_cursor`, `last_seen_version`, `copied_count` để resume được.
 
 Ví dụ:
 
 ```text
 q=*:*
-sort=id asc
+sort=_version_ asc,id asc
 cursorMark=*
 rows=1000
 ```
 
-### 10.2 Delta sync
+### 10.2 Final cursor check
 
-Trước full copy, capture watermark:
-
-```text
-max(_version_) from source collection
-```
-
-Sau full copy:
+Trước validate/cutover, pause/block writes ngắn rồi chạy check cuối để đảm bảo target đã bắt kịp source.
 
 ```text
-q=_version_:{last_watermark TO *]
+q=*:*
 sort=_version_ asc,id asc
+cursorMark=<last_cursor>
+rows=1000
 ```
 
-Flow mỗi batch:
-
-```text
-read docs where _version_ > last_watermark
-upsert into target
-update last_watermark
-persist progress
-```
+Nếu cursor không trả thêm docs mới, chuyển sang validate. Nếu còn docs, copy tiếp batch cuối rồi persist progress.
 
 ### 10.3 Deletes
 
-`_version_` không bắt được hard delete. Nếu doc bị xóa khỏi source, doc đó không còn tồn tại để query delta.
+`_version_` cursor không bắt được hard delete nếu doc đã biến mất khỏi source trước khi worker đọc tới.
 
 Các hướng xử lý:
 
@@ -604,7 +589,7 @@ Cơ chế:
 Pros:
 
 - Built-in trong Solr.
-- Không cần tự viết full copy worker.
+- Không cần tự viết custom copy worker.
 - Không cần đổi app endpoint vì vẫn là cùng collection.
 - Solr tự xử lý hash range split.
 
@@ -614,7 +599,7 @@ Cons:
 - Rollback khó hơn alias switch.
 - Không có target collection riêng để validate trước cutover.
 - Không giúp chuyển production sang alias model.
-- Ít kiểm soát DB history, delta sync, reconcile và conflict policy.
+- Ít kiểm soát DB history, copy cursor, validate và rollback policy.
 - Với topic 40M docs có thể ảnh hưởng disk IO, CPU, recovery và query/update latency.
 
 Kết luận:
@@ -648,7 +633,7 @@ Cons:
 - Source collection bị read-only trong lúc reindex.
 - Với 40M docs, thời gian read-only có thể rất dài.
 - Có thể lossy nếu field cần reindex không stored.
-- Ít kiểm soát delta sync, reconcile, DB history và rollback hơn custom migration.
+- Ít kiểm soát copy cursor, validate, DB history và rollback hơn custom migration.
 
 Kết luận:
 
@@ -671,9 +656,9 @@ Production chính nên dùng custom migration nếu topic vẫn nhận writes li
 | `source_num_shards` | Số shard source |
 | `target_num_shards` | Số shard target |
 | `status` | Trạng thái run |
-| `initial_watermark` | `_version_` watermark ban đầu |
-| `last_watermark` | Watermark đã xử lý gần nhất |
-| `full_copy_cursor` | CursorMark để resume full copy |
+| `full_copy_cursor` | CursorMark để resume copy |
+| `last_seen_version` | `_version_` lớn nhất đã thấy trong quá trình copy |
+| `copied_count` | Số docs đã copy sang target |
 | `cutover_mode` | `shadow_alias`, `alias_switch_pause`, hoặc `alias_switch_no_pause` |
 | `conflict_policy` | Policy reconcile khi không pause |
 | `started_at` | Thời gian bắt đầu |
@@ -688,8 +673,8 @@ Events nên lưu:
 - `DETECTED`
 - `TARGET_CREATE_REQUESTED`
 - `TARGET_CREATE_SUCCEEDED`
-- `FULL_COPY_BATCH_DONE`
-- `DELTA_BATCH_DONE`
+- `COPY_BATCH_DONE`
+- `FINAL_CURSOR_CHECK_DONE`
 - `VALIDATION_FAILED`
 - `CUTOVER_ALIAS_UPDATED`
 - `RECONCILE_DONE`
@@ -703,13 +688,14 @@ Events nên lưu:
 |---|---|---|
 | Shadow alias che old physical | Ops có thể tưởng `/solr/topic_100001` vẫn là old | Runbook rõ, audit aliases, validate trước cutover |
 | Rollback init sau new writes | Old thiếu writes mới | Rollback window ngắn, pause write, replay log/dual-write nếu có |
-| No-pause reconcile stale overwrite | Bản cũ overwrite bản mới | Không blind upsert, compare bằng timestamp/version đáng tin |
-| `_version_` không bắt hard delete | Target giữ docs đã bị xóa | Soft delete/tombstone/change log/cấm hard delete |
+| Write phát sinh sau validate trước cutover | Target có thể thiếu write mới dù validate pass | Pause/block writes ngắn trong window validate + alias cutover |
+| No-pause reconcile stale overwrite | Bản cũ overwrite bản mới | Không blind upsert, compare bằng timestamp/application version đáng tin |
+| `_version_` cursor không bắt hard delete | Target giữ docs đã bị xóa | Soft delete/tombstone/change log/cấm hard delete |
 | Update chain skip existing | Reconcile bỏ sót update mới hơn | Dùng migration upsert endpoint/chain riêng |
 | SPLITSHARD in-place operation | Split tác động trực tiếp collection production, rollback khó hơn alias switch | Chỉ PoC/staging trước; nếu dùng production thì maintenance window, async request, monitor IO/latency/recovery |
 | Group alias đổi data ngầm | Group alias đọc current version sau cutover topic con | Audit `LISTALIASES`, validate group alias, ghi policy rõ |
 | Alias nhiều collections ảnh hưởng scoring | Ranking/relevance có thể lệch | Research `ExactStatsCache` nếu ranking quan trọng |
-| Full copy 40M docs tốn tài nguyên | Tăng load Solr/network/heap | Batch size, rate limit, off-peak, retry/backoff |
+| Copy 40M docs tốn tài nguyên | Tăng load Solr/network/heap | Batch size, rate limit, off-peak, retry/backoff |
 | REINDEXCOLLECTION read-only lâu | Write downtime dài | Chỉ PoC/research nếu không chấp nhận read-only lâu |
 
 ## 15. Research Checklist
@@ -736,16 +722,16 @@ Khuyến nghị:
 
 ```text
 Lần init:
-  custom full copy + delta sync
-  pause write mạnh
+  custom copy by _version_ cursor
+  pause/block writes ngắn khi validate + cutover
   create shadow alias topic_100001 -> topic_100001_v2
   rollback bằng DELETEALIAS
 
 Lần 2 trở đi:
-  custom full copy + delta sync
+  custom copy by _version_ cursor
   update alias topic_100001 -> topic_100001_vN+1
   rollback bằng update alias về version trước
-  có thể no-pause nếu reconcile có conflict policy đáng tin
+  no-pause chỉ khi có change log/conflict policy đáng tin
 ```
 
 Group alias cần được audit trước/sau cutover. Wiki này là bản share/research chi tiết; `docs/reshard-topic-collection-tech-spec.md` là source of truth kỹ thuật trong repo.
