@@ -158,6 +158,39 @@ target_shards = 2 hoặc 4 tùy policy
 target_collection = topic_100001_v2
 ```
 
+### 4.1 General Implementation Steps
+
+Các bước implement tổng quát theo 2 layer detect/enqueue và worker/migration:
+
+1. Schedule detect job chạy mỗi ngày, ví dụ `00:00`.
+2. Check active migration để không enqueue trùng topic đang migrate.
+3. Scan Solr collections bằng Collections API hoặc inventory nội bộ.
+4. Filter active/current topic collections, bỏ qua old version và target version đang migrate.
+5. Calculate `doc_count`, `current_num_shards`, `target_num_shards`; policy tham khảo là `target_num_shards = ceil(doc_count / 10_000_000)`, nhưng nên để configurable.
+6. Push message vào queue `data.resharding_solr_topic`, mỗi message đại diện cho một topic cần reshard.
+7. Worker consume queue, lock theo `topic_id` hoặc `source_collection`, rồi check DB run/version.
+8. Create target collection version mới, ví dụ `topic_100001_v2`, preserve configset/router/replication policy từ source.
+9. Capture initial `_version_` watermark trước khi full copy.
+10. Full copy by cursor từ source sang target, sort ổn định theo `id asc`.
+11. Persist cursor/requeue nếu batch lớn hoặc worker cần pause/resume.
+12. Delta sync by `_version_` để bắt insert/update phát sinh trong lúc full copy.
+13. Validate physical old vs physical new trước khi cutover alias.
+14. Cutover alias: lần init dùng shadow alias, từ lần 2 trở đi update alias sang version mới.
+15. Mark done và retain old collection theo rollback/retention policy.
+
+Payload queue tối thiểu:
+
+```json
+{
+  "topic_id": "100001",
+  "source_collection": "topic_100001",
+  "doc_count": 40000000,
+  "current_num_shards": 1,
+  "target_num_shards": 4,
+  "is_init": true
+}
+```
+
 ## 5. Lần Init Đầu Tiên
 
 Đây là lần khó nhất vì production chưa có alias, nhưng app vẫn gọi `/solr/topic_100001`.

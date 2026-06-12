@@ -389,7 +389,42 @@ Nếu đã adopt alias:
 App read/write -> alias topic_100001 -> physical collection topic_100001_v2
 ```
 
-### 6.2 Detect
+### 6.2 General Implementation Steps
+
+Flow implement chia thành 2 layer chính: detect/enqueue và worker/migration.
+
+| Layer | Step | Implementation detail |
+|---|---|---|
+| Detect/enqueue | Schedule detect job | Chạy theo schedule, ví dụ `00:00` mỗi ngày; đọc schedule/state từ MongoDB. |
+| Detect/enqueue | Check active migration | Nếu topic hoặc detect run đang có migration active thì không enqueue trùng. |
+| Detect/enqueue | Scan Solr collections | Gọi `LIST` hoặc inventory nội bộ để lấy các collection dạng `topic_*`. |
+| Detect/enqueue | Filter active/current topic collections | Bỏ qua old version, target version đang migrate, collection inactive hoặc collection không phải topic. |
+| Detect/enqueue | Calculate threshold | Lấy `doc_count`, `current_num_shards`, tính `target_num_shards = ceil(doc_count / target_docs_per_shard)`. Với flow trong diagram, default tham khảo là `10_000_000` docs/shard, nhưng production nên để configurable. |
+| Detect/enqueue | Push message | Nếu `target_num_shards > current_num_shards`, push 1 topic vào queue `data.resharding_solr_topic`. |
+| Worker/migration | Consume queue | Worker consume message, lock theo `topic_id` hoặc `source_collection`, rồi check DB run/version. |
+| Worker/migration | Create target collection version | Tạo collection mới như `topic_100001_v2`, preserve configset/router/replication policy từ source. |
+| Worker/migration | Capture watermark | Lấy `initial_watermark = max(_version_)` từ source trước full copy. |
+| Worker/migration | Full copy by cursor | Copy source -> target bằng `cursorMark`, `sort=id asc`, không gửi `_version_` sang target. |
+| Worker/migration | Persist cursor/requeue | Lưu `full_copy_cursor`; nếu batch/run quá lớn thì set `PAUSED` và requeue để resume. |
+| Worker/migration | Delta sync | Dùng `_version_ > last_watermark` để upsert các insert/update phát sinh trong lúc full copy. |
+| Worker/migration | Validate before cutover | Validate physical old vs physical new trước khi cutover alias. |
+| Worker/migration | Cutover alias | Lần init tạo shadow alias; từ lần 2 trở đi update alias sang target version mới. |
+| Worker/migration | Mark done/retain old | Mark run `DONE`, giữ old collection theo retention policy để rollback. |
+
+Message queue payload tối thiểu:
+
+```json
+{
+  "topic_id": "100001",
+  "source_collection": "topic_100001",
+  "doc_count": 40000000,
+  "current_num_shards": 1,
+  "target_num_shards": 4,
+  "is_init": true
+}
+```
+
+### 6.3 Detect
 
 Nightly job chạy mỗi đêm:
 
@@ -414,7 +449,7 @@ and no active migration for same topic
 Shard planning ví dụ:
 
 ```text
-target_docs_per_shard = 20_000_000
+target_docs_per_shard = 10_000_000
 desired_num_shards = ceil(doc_count / target_docs_per_shard)
 desired_num_shards = clamp(desired_num_shards, min=2, max=16)
 ```
@@ -423,11 +458,11 @@ Với `topic_100001` có 40M docs:
 
 ```text
 current_num_shards = 1
-desired_num_shards = 2
+desired_num_shards = 4
 target collection = topic_100001_v2
 ```
 
-### 6.3 Tạo target collection
+### 6.4 Tạo target collection
 
 Tạo collection mới:
 
@@ -445,7 +480,7 @@ Lưu ý:
 - Không đổi analyzer/schema trong flow reshard v1.
 - Nếu `id` không có route prefix của `compositeId`, Solr vẫn hash `id` để route docs. Phân phối có thể chấp nhận được nếu `id` đủ ngẫu nhiên.
 
-### 6.4 Capture initial watermark
+### 6.5 Capture initial watermark
 
 Trước khi full copy, lấy max `_version_` trên old collection:
 
@@ -464,7 +499,7 @@ initial_watermark = max_old_version_before_full_copy
 
 Watermark này dùng để bắt các insert/update phát sinh trong lúc full copy đang chạy.
 
-### 6.5 Full copy
+### 6.6 Full copy
 
 Full copy toàn bộ docs từ old sang new bằng cursor pagination:
 
@@ -486,7 +521,7 @@ Khuyến nghị:
 - Commit theo batch lớn hoặc time-based, tránh commit mỗi batch nhỏ.
 - Persist `cursorMark`, copied count, last batch time vào DB để resume.
 
-### 6.6 Delta sync
+### 6.7 Delta sync
 
 Sau full copy, chạy delta từ old sang new:
 
@@ -516,7 +551,7 @@ Lưu ý:
 - `_version_` bắt được insert/update còn tồn tại trong Solr.
 - `_version_` không bắt được hard delete, vì doc đã bị xóa thì không còn query được.
 
-### 6.7 Validate trước cutover
+### 6.8 Validate trước cutover
 
 Validation tối thiểu:
 
@@ -555,7 +590,7 @@ Validation tolerance:
 - Count có thể lệch tạm thời trong lúc write còn chạy.
 - Trước cutover phải final sync và count difference nằm trong ngưỡng cho phép, tốt nhất là `0` nếu pause write được.
 
-### 6.8 Cutover lần đầu bằng shadow alias
+### 6.9 Cutover lần đầu bằng shadow alias
 
 Vì app không đổi endpoint được, lần đầu cần giữ nguyên `/solr/topic_100001`. Cutover khuyến nghị:
 
@@ -586,7 +621,7 @@ Lưu ý:
 - Không nên phụ thuộc vào post-cutover reconcile từ `/solr/topic_100001`, vì path này sau cutover đã đi vào new.
 - Nếu cần reconcile sau cutover lần đầu, worker phải có cách truy cập old collection bằng tên/đường riêng không bị alias resolve, hoặc phải dùng write log/change log ngoài Solr.
 
-### 6.9 Cutover từ lần reshard thứ 2 trở đi
+### 6.10 Cutover từ lần reshard thứ 2 trở đi
 
 Sau lần đầu, alias đã tồn tại:
 
@@ -626,7 +661,7 @@ Có 2 mode cutover:
 
 Mode không pause chỉ nên dùng nếu có conflict policy rõ ràng khi cùng một `id` được update ở cả old và new quanh thời điểm cutover.
 
-### 6.10 Post-cutover reconcile không pause
+### 6.11 Post-cutover reconcile không pause
 
 Post-cutover reconcile từ lần 2 trở đi có thể làm được vì old physical collection vẫn có tên riêng, ví dụ `topic_100001_v2`.
 
@@ -670,7 +705,7 @@ else:
 - Phải có application timestamp/version đáng tin, ví dụ `updated_at`, `man_updated_at`, hoặc một field version từ source-of-truth.
 - Nếu không có timestamp/version đáng tin, không-pause sẽ có rủi ro stale overwrite hoặc miss update.
 
-### 6.11 Rollback
+### 6.12 Rollback
 
 Nếu chưa có write vào new sau cutover:
 

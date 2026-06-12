@@ -2,7 +2,7 @@
   <strong>APACHE SOLR</strong>
 </h1>
 <h1>
-  <span style="color: rgb(51,102,255);"> <strong>A. Change log</strong> </span>
+  <span style="color: rgb(51,102,255);"> <strong>A. Change Log</strong> </span>
 </h1>
 <table class="relative-table wrapped" style="width: 83.5294%;">
   <colgroup class=""> <col class="" style="width: 8.54643%;"/> <col class="" style="width: 17.6215%;"/> <col class="" style="width: 15.2426%;"/> <col class="" style="width: 41.4973%;"/> <col class="" style="width: 17.0929%;"/> </colgroup>
@@ -101,22 +101,18 @@
   </tbody>
 </table>
 <h1>
-  <span style="color: rgb(51,102,255);">B. <strong>Table Of Contents</strong> </span>
+  <span style="color: rgb(51,102,255);"> <strong>B. Executive Summary</strong> </span>
 </h1>
-<p>
-  <ac:structured-macro ac:macro-id="a586dc26-ce22-4054-9f99-95268522efa3" ac:name="toc" ac:schema-version="1"/>
-</p>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>C. Target</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="60a8118f-5991-4e6c-b1fd-012eb33a01ef" ac:name="info" ac:schema-version="1">
+<ac:structured-macro ac:macro-id="24ec922e-6721-4b7e-8c33-773fd54cc37e" ac:name="info" ac:schema-version="1">
   <ac:parameter ac:name="title">SolrCloud Topic Collection Resharding Plan</ac:parameter>
   <ac:rich-text-body>
     <ul>
       <li>Tự động reshard topic collection trong SolrCloud 9 khi dữ liệu vượt ngưỡng, ví dụ topic đạt khoảng 40 triệu records.</li>
       <li>Production có nhiều app/service gọi trực tiếp <code>/solr/topic_xxx</code>, nên v1 không giả định đổi app endpoint.</li>
+      <li>Hướng chính là custom migration: tạo target collection version mới, full copy, delta sync, validate, rồi cutover.</li>
       <li>Lần cutover đầu tiên giữ endpoint cũ bằng <strong>shadow alias</strong>; từ lần 2 trở đi update alias sang collection version mới.</li>
-      <li>Tài liệu bao gồm schema topic collection, group alias, migration/reconcile, rollback, risks, SPLITSHARD research và REINDEXCOLLECTION research.</li>
+      <li>Validate physical old vs physical new phải chạy trước cutover alias.</li>
+      <li>Giữ old collection theo retention policy để rollback.</li>
     </ul>
     <p>
       <ac:image ac:align="center" ac:height="400">
@@ -126,13 +122,206 @@
   </ac:rich-text-body>
 </ac:structured-macro>
 <h1>
-  <span style="color: rgb(51,102,255);"> <strong>D.</strong> </span> <strong> <span style="color: rgb(0,0,255);"> Detail</span> </strong>
+  <span style="color: rgb(51,102,255);"> <strong>C. Table Of Contents</strong> </span>
 </h1>
-<ac:structured-macro ac:macro-id="61e509d0-d245-4550-a424-1367ef73460a" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Reshard topic collection trong SolrCloud 9</ac:parameter>
+<p>
+  <ac:structured-macro ac:macro-id="a586dc26-ce22-4054-9f99-95268522efa3" ac:name="toc" ac:schema-version="1"/>
+</p>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>D. End-to-End Flow</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="88ef9b7a-13af-4cc2-9192-1e50ebb2d401" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Detect/enqueue và worker/migration flow</ac:parameter>
   <ac:rich-text-body>
     <h2>
-      <strong>1. Mục tiêu</strong>
+      <strong>D.1 Detect Resharding Topic Layer</strong>
+    </h2>
+    <p>
+      <ac:image ac:align="center" ac:height="360">
+        <ri:attachment ri:filename="11-detect-resharding-topic-layer.png"/>
+      </ac:image>
+    </p>
+    <ol>
+      <li>
+        <p><strong>Schedule detect job</strong></p>
+        <ul>
+          <li><strong>Action:</strong> chạy job theo schedule, ví dụ <code>00:00</code> mỗi ngày.</li>
+          <li><strong>Output:</strong> tạo detect run cho ngày hiện tại nếu schedule enabled.</li>
+          <li><strong>Persist:</strong> lưu detect run/state để lần chạy sau không enqueue trùng.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Check active migration</strong></p>
+        <ul>
+          <li><strong>Action:</strong> query DB history để kiểm tra topic hoặc detect run đang active.</li>
+          <li><strong>Output:</strong> nếu có active run thì skip topic/run đó.</li>
+          <li><strong>Persist:</strong> không tạo message mới khi topic đang migrate.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>List Solr collections</strong></p>
+        <ul>
+          <li><strong>Action:</strong> gọi Collections API <code>LIST</code> hoặc đọc inventory nội bộ.</li>
+          <li><strong>Output:</strong> danh sách candidate collections dạng <code>topic_*</code>.</li>
+          <li><strong>Persist:</strong> lưu snapshot list collection nếu cần audit detect run.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Filter active/current collections</strong></p>
+        <ul>
+          <li><strong>Action:</strong> bỏ old version, target version đang migrate, inactive collection và collection không phải topic.</li>
+          <li><strong>Output:</strong> danh sách active/current topic collections cần kiểm tra ngưỡng.</li>
+          <li><strong>Persist:</strong> lưu skipped reason nếu cần debug detect.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Get doc count and shard count</strong></p>
+        <ul>
+          <li><strong>Action:</strong> lấy doc count bằng <code>/solr/{collection}/select?q=*:*&amp;rows=0&amp;wt=json</code>.</li>
+          <li><strong>Action:</strong> lấy shard/router/health bằng <code>CLUSTERSTATUS</code>.</li>
+          <li><strong>Output:</strong> có <code>doc_count</code>, <code>current_num_shards</code>, router và replica health.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Calculate target shards</strong></p>
+        <ul>
+          <li><strong>Action:</strong> tính <code>target_num_shards = ceil(doc_count / target_docs_per_shard)</code>.</li>
+          <li><strong>Output:</strong> topic qualify khi <code>target_num_shards &gt; current_num_shards</code>.</li>
+          <li><strong>Persist:</strong> lưu <code>doc_count</code>, <code>current_num_shards</code>, <code>target_num_shards</code> vào run candidate.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Build queue message</strong></p>
+        <ul>
+          <li><strong>Action:</strong> build payload cho topic cần reshard.</li>
+          <li><strong>Output:</strong> message có <code>topic_id</code>, <code>source_collection</code>, <code>doc_count</code>, <code>current_num_shards</code>, <code>target_num_shards</code>, <code>is_init</code>.</li>
+          <li><strong>Persist:</strong> gắn message với detect run để idempotent.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Push to queue</strong></p>
+        <ul>
+          <li><strong>Action:</strong> push vào queue <code>data.resharding_solr_topic</code>.</li>
+          <li><strong>Output:</strong> 1 topic/message chờ worker xử lý.</li>
+          <li><strong>Persist:</strong> mark candidate đã enqueue để tránh duplicate message.</li>
+        </ul>
+      </li>
+    </ol>
+    <h2>
+      <strong>D.2 Resharding Solr Topic Layer</strong>
+    </h2>
+    <p>
+      <ac:image ac:align="center" ac:height="330">
+        <ri:attachment ri:filename="12-resharding-solr-topic-layer.png"/>
+      </ac:image>
+    </p>
+    <ol>
+      <li>
+        <p><strong>Consume queue</strong></p>
+        <ul>
+          <li><strong>Action:</strong> worker nhận message từ <code>data.resharding_solr_topic</code>.</li>
+          <li><strong>Output:</strong> lấy được topic reshard job với source collection và target shard count.</li>
+          <li><strong>Persist:</strong> ack message chỉ sau khi run state đã được tạo hoặc resume an toàn.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Lock and check run/version</strong></p>
+        <ul>
+          <li><strong>Action:</strong> lock theo <code>topic_id</code> hoặc <code>source_collection</code>, rồi check DB run/version.</li>
+          <li><strong>Output:</strong> tạo run mới hoặc resume run đang <code>PAUSED</code>.</li>
+          <li><strong>Persist:</strong> lưu trạng thái run để chỉ một worker xử lý một topic tại một thời điểm.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Create target collection</strong></p>
+        <ul>
+          <li><strong>Action:</strong> tạo collection mới như <code>topic_xxx_v2</code>.</li>
+          <li><strong>Output:</strong> target collection có shard count mới và sẵn sàng nhận writes từ migration worker.</li>
+          <li><strong>Persist:</strong> lưu <code>target_collection</code>, configset/router/replication policy đã preserve từ source.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Capture initial watermark</strong></p>
+        <ul>
+          <li><strong>Action:</strong> lấy <code>max(_version_)</code> từ source trước full copy.</li>
+          <li><strong>Output:</strong> có <code>initial_watermark</code> và <code>last_watermark</code> ban đầu.</li>
+          <li><strong>Persist:</strong> lưu watermark vào DB run để delta sync resume được.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Full copy by cursor</strong></p>
+        <ul>
+          <li><strong>Action:</strong> query source bằng <code>cursorMark</code>, sort <code>id asc</code>, upsert vào target.</li>
+          <li><strong>Action:</strong> không copy <code>_version_</code> từ source sang target.</li>
+          <li><strong>Output:</strong> target có baseline docs từ source.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Persist cursor and requeue</strong></p>
+        <ul>
+          <li><strong>Action:</strong> lưu <code>full_copy_cursor</code>, copied count và batch progress.</li>
+          <li><strong>Output:</strong> nếu batch/run quá lớn thì set <code>PAUSED</code> và requeue.</li>
+          <li><strong>Persist:</strong> worker có thể resume từ cursor cuối cùng nếu restart.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Delta sync by _version_</strong></p>
+        <ul>
+          <li><strong>Action:</strong> sync docs bằng query <code>_version_:{last_watermark TO *]</code>.</li>
+          <li><strong>Output:</strong> target bắt được insert/update phát sinh trong lúc full copy.</li>
+          <li><strong>Persist:</strong> update <code>last_watermark</code> sau mỗi batch delta.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Validate physical old vs physical new</strong></p>
+        <ul>
+          <li><strong>Action:</strong> check count, sample ids, business queries/facets và shard/replica health.</li>
+          <li><strong>Output:</strong> chỉ cho phép cutover khi validation pass hoặc nằm trong tolerance đã định nghĩa.</li>
+          <li><strong>Persist:</strong> lưu validation result vào run history.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Alias cutover</strong></p>
+        <ul>
+          <li><strong>Action:</strong> chỉ chạy sau validate pass; init dùng shadow alias, các lần sau update alias.</li>
+          <li><strong>Output:</strong> app đọc/ghi qua endpoint cũ nhưng traffic đi vào target collection mới.</li>
+          <li><strong>Persist:</strong> lưu <code>cutover_at</code> và alias mapping sau cutover.</li>
+        </ul>
+      </li>
+      <li>
+        <p><strong>Mark done and retain old</strong></p>
+        <ul>
+          <li><strong>Action:</strong> set run <code>DONE</code> sau cutover thành công.</li>
+          <li><strong>Output:</strong> migration completed, old collection vẫn được giữ để rollback.</li>
+          <li><strong>Persist:</strong> lưu retention deadline cho old collection.</li>
+        </ul>
+      </li>
+    </ol>
+    <p><strong>Note:</strong> diagram có thể biểu diễn alias cutover gần validate, nhưng runbook production phải enforce <code>validate before alias cutover</code>.</p>
+    <h2>
+      <strong>D.3 Queue Payload</strong>
+    </h2>
+    <ac:structured-macro ac:macro-id="84576289-fd94-486e-8eee-d85014f4653f" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">json</ac:parameter>
+      <ac:plain-text-body><![CDATA[{
+  "topic_id": "100001",
+  "source_collection": "topic_100001",
+  "doc_count": 40000000,
+  "current_num_shards": 1,
+  "target_num_shards": 4,
+  "is_init": true
+}]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>E. Implementation Detail</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="f0e983f3-fc79-4438-be43-d702ea9eab33" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Implementation detail</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>E.1 Mục tiêu</strong>
     </h2>
     <p>Xây dựng cơ chế tự động reshard cho các topic collection trong SolrCloud 9 khi dữ liệu của một topic tăng vượt ngưỡng, ví dụ topic đạt khoảng 40 triệu records và <code>numShards=1</code> không còn phù hợp.</p>
     <ul>
@@ -143,130 +332,9 @@
       <li>Giữ endpoint cũ <code>/solr/topic_xxx</code> cho các app hiện tại.</li>
       <li>Cutover an toàn bằng alias và giữ old collection để rollback.</li>
     </ul>
-    <p>
-      <strong>Constraint quan trọng:</strong> production có nhiều app/service đang gọi trực tiếp <code>/solr/topic_xxx</code>; vì vậy lần cutover đầu tiên cần dùng shadow alias để giữ nguyên endpoint cũ.</p>
-    <ac:structured-macro ac:macro-id="1896fa3c-8d97-4a74-856a-a94f788a292f" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[detect topic lớn
--> tính số shard mới
--> tạo target collection version mới
--> full copy dữ liệu
--> delta sync bằng _version_ watermark
--> validate dữ liệu
--> cutover bằng shadow alias hoặc alias switch
--> reconcile nếu cần
--> giữ old collection để rollback]]></ac:plain-text-body>
-    </ac:structured-macro>
+    <p><strong>Constraint quan trọng:</strong> production có nhiều app/service đang gọi trực tiếp <code>/solr/topic_xxx</code>; vì vậy lần cutover đầu tiên cần dùng shadow alias để giữ nguyên endpoint cũ.</p>
     <h2>
-      <strong>2. Hiện trạng</strong>
-    </h2>
-    <h3>
-      <strong>2.1 Production</strong>
-    </h3>
-    <ul>
-      <li>Mỗi topic đang là một physical Solr collection riêng, ví dụ <code>topic_100001</code>.</li>
-      <li>Collection dùng <code>router.name=compositeId</code>.</li>
-      <li>Collection dùng <code>uniqueKey=id</code>.</li>
-      <li>Ban đầu collection có thể chỉ có <code>numShards=1</code>.</li>
-      <li>Production hiện chưa có alias theo logical topic name.</li>
-      <li>Nhiều app/service read/write trực tiếp vào <code>/solr/topic_100001</code>.</li>
-      <li>Khi topic tăng dữ liệu lớn, một shard dễ trở thành bottleneck cho query/indexing.</li>
-    </ul>
-    <h3>
-      <strong>2.2 Repo local</strong>
-    </h3>
-    <ul>
-      <li>Repo local hiện là SolrCloud sandbox, chưa phải production job service.</li>
-      <li>SolrCloud local dùng Solr <code>9.8.1</code>.</li>
-      <li>Configset <code>topic_conf</code>.</li>
-      <li>Sample collection <code>topic_4777</code>.</li>
-      <li>Script bootstrap <code>scripts/solr-init.sh</code>.</li>
-      <li>Schema trong <code>mentions_conf/managed-schema.xml</code>.</li>
-      <li>Solr config trong <code>mentions_conf/solrconfig.xml</code>.</li>
-      <li>Chưa có nightly job, DB history, migration worker, cutover automation hoặc rollback automation.</li>
-    </ul>
-    <h2>
-      <strong>3. Topic Collection Schema</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="135bbe9b-4662-46db-abab-76e9fdea3c78" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[configset: topic_conf
-schema name: topics
-schema version: 1.6
-uniqueKey: id
-required fields chính: id, domain]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Field</th>
-          <th>Ý nghĩa với migration</th>
-        </tr>
-        <tr>
-          <td>
-            <code>id</code>
-          </td>
-          <td>Unique key, indexed/stored, dùng để sort ổn định khi full copy bằng cursor.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>domain</code>
-          </td>
-          <td>Required field chính trong schema.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>_version_</code>
-          </td>
-          <td>Indexed/stored, dùng làm technical watermark cho delta insert/update.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>updated_at</code>
-          </td>
-          <td>Candidate timestamp cho conflict policy khi reconcile không pause.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>man_updated_at</code>
-          </td>
-          <td>Candidate timestamp khác cho manual/business updates.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>copied_at</code>
-          </td>
-          <td>Timestamp liên quan copy/index pipeline.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>last_activity</code>
-          </td>
-          <td>Candidate timestamp cho activity freshness.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>last_sentiment</code>
-          </td>
-          <td>Candidate timestamp liên quan sentiment update.</td>
-        </tr>
-      </tbody>
-    </table>
-    <p>Một số field <code>stored=false</code>: <code>search_text_exactly</code>, <code>sound_exactly</code>, <code>effect_exactly</code>. Khi full copy bằng <code>/select</code>, các field này không lấy trực tiếp được và cần regenerate bằng <code>copyField</code>.</p>
-    <ac:structured-macro ac:macro-id="f98ffbe2-e480-460c-8a61-73fb09272585" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[copyField:
-search_text -> search_text_exactly
-effect      -> effect_exactly
-sound       -> sound_exactly
-
-dynamic fields:
-engage_* -> int
-random_* -> random]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <p>Update chain hiện có <code>SkipExistingDocumentsProcessorFactory</code> với <code>skipInsertIfExists=true</code>. Nếu migration/reconcile cần overwrite doc mới hơn trong target, cần endpoint hoặc update chain riêng cho upsert migration.</p>
-    <h2>
-      <strong>4. Flow Tổng Quát</strong>
+      <strong>E.2 General Flow</strong>
     </h2>
     <p>Không chọn hướng split shard trực tiếp trên collection cũ làm flow chính. Hướng production an toàn hơn là tạo collection mới rồi migrate.</p>
     <ol>
@@ -281,8 +349,7 @@ random_* -> random]]></ac:plain-text-body>
       <li>Reconcile nếu cần.</li>
       <li>Giữ old collection để rollback.</li>
     </ol>
-    <p>Ví dụ:</p>
-    <ac:structured-macro ac:macro-id="c5c34433-24e1-46a9-b189-85b39f31cee6" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="e78115d7-f2af-4726-9b84-552eeb8af080" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[topic_100001
 current_shards = 1
@@ -291,18 +358,18 @@ target_shards = 2 hoặc 4 tùy policy
 target_collection = topic_100001_v2]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>5. Lần Init Đầu Tiên</strong>
+      <strong>E.3 Init Cutover With Shadow Alias</strong>
     </h2>
     <p>Đây là lần khó nhất vì production chưa có alias, nhưng app vẫn gọi <code>/solr/topic_100001</code>.</p>
-    <p style="text-align: center;">
+    <p>
       <ac:image ac:align="center" ac:height="400">
         <ri:attachment ri:filename="02-init-shadow-alias-before-after.png"/>
       </ac:image>
     </p>
     <h3>
-      <strong>5.1 Initial state</strong>
+      <strong>E.3.1 Initial state</strong>
     </h3>
-    <ac:structured-macro ac:macro-id="c0a12817-cfd9-44d5-ab01-98d071641b04" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="cda02c4f-828b-440c-b652-6023f618145a" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[physical:
   topic_100001
@@ -314,16 +381,16 @@ app:
   /solr/topic_100001 -> physical topic_100001]]></ac:plain-text-body>
     </ac:structured-macro>
     <h3>
-      <strong>5.2 Migration flow</strong>
+      <strong>E.3.2 Migration flow</strong>
     </h3>
     <p>
       <strong>
-        <ac:image ac:align="center" ac:height="400">
-          <ri:attachment ri:filename="03-init-migration-sequence.png"/>
-        </ac:image>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="03-init-migration-sequence.png"/>
+      </ac:image>
       </strong>
     </p>
-    <ac:structured-macro ac:macro-id="cf931566-2121-4ad9-b0aa-9bb0d0b74b5e" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="7217e627-182f-4a04-9a70-ea9a57bea787" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[1. Detect topic_100001 đạt ngưỡng.
 2. Tạo physical collection mới topic_100001_v2 với số shard mới.
@@ -337,9 +404,9 @@ app:
 10. Resume writes.]]></ac:plain-text-body>
     </ac:structured-macro>
     <h3>
-      <strong>5.3 After state</strong>
+      <strong>E.3.3 After state</strong>
     </h3>
-    <ac:structured-macro ac:macro-id="e555f818-669f-48f1-9ef5-aa6c8b70edde" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="5971226c-2f4e-4824-9ff6-e8aa22368aea" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[physical:
   topic_100001      # old, vẫn tồn tại nhưng bị alias che
@@ -352,66 +419,39 @@ app:
   /solr/topic_100001 -> alias -> topic_100001_v2]]></ac:plain-text-body>
     </ac:structured-macro>
     <p>Solr ưu tiên alias hơn physical collection cho regular query/update. Sau khi tạo shadow alias, request <code>/solr/topic_100001/select</code> và <code>/solr/topic_100001/update</code> sẽ đi vào <code>topic_100001_v2</code>, không còn đi vào physical old <code>topic_100001</code>.</p>
-    <h3>
-      <strong>5.4 Rollback init</strong>
-    </h3>
-    <p>Nếu chưa có write mới vào <code>topic_100001_v2</code>, rollback lần đầu có thể là:</p>
-    <ac:structured-macro ac:macro-id="753c212f-2f4a-4235-bc53-0fd960c85723" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[DELETEALIAS topic_100001]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <p>Nếu <code>topic_100001_v2</code> đã nhận writes mới, rollback về old có thể thiếu data. Khi đó cần pause write, replay write log, dual-write, hoặc reconcile ngược.</p>
     <h2>
-      <strong>6. Lần 2, Lần 3, Lần N</strong>
+      <strong>E.4 Later Reshard Runs</strong>
     </h2>
     <p>
       <strong>
-        <ac:image ac:align="center" ac:height="400">
-          <ri:attachment ri:filename="04-versioned-alias-flow.png"/>
-        </ac:image>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="04-versioned-alias-flow.png"/>
+      </ac:image>
       </strong>
     </p>
-    <h3>
-      <strong>6.1 Lần 2</strong>
-    </h3>
-    <ac:structured-macro ac:macro-id="30887bd1-bb59-4eb3-a5e1-f729f95e5a89" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="6c696878-08e1-41e6-8f36-19ad13896c28" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[source: topic_100001_v2
+      <ac:plain-text-body><![CDATA[Lần 2:
+source: topic_100001_v2
 target: topic_100001_v3
 cutover: update alias topic_100001 -> topic_100001_v3
-rollback: update alias topic_100001 -> topic_100001_v2]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h3>
-      <strong>6.2 Lần 3</strong>
-    </h3>
-    <ac:structured-macro ac:macro-id="c34554dd-6669-4ba9-89aa-95a5e11632c5" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[source: topic_100001_v3
-target: topic_100001_v4
-cutover: update alias topic_100001 -> topic_100001_v4
-rollback: update alias topic_100001 -> topic_100001_v3]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h3>
-      <strong>6.3 Lần N</strong>
-    </h3>
-    <ac:structured-macro ac:macro-id="f04d3da6-530c-4862-89ed-fd3c0e2e41cc" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[source: topic_100001_vN
+rollback: update alias topic_100001 -> topic_100001_v2
+
+Lần N:
+source: topic_100001_vN
 target: topic_100001_vN+1
 cutover: update alias topic_100001 -> topic_100001_vN+1
 rollback: update alias topic_100001 -> topic_100001_vN]]></ac:plain-text-body>
     </ac:structured-macro>
-    <h3>
-      <strong>6.4 Cutover modes</strong>
-    </h3>
+    <h2>
+      <strong>E.5 Cutover Modes</strong>
+    </h2>
     <ul>
-      <li>
-        <strong>Strong consistency:</strong> pause write ngắn, final delta sync, validate nhanh, update alias, resume write.</li>
-      <li>
-        <strong>Eventual consistency:</strong> delta sync đến khi backlog nhỏ, capture watermark, update alias, post-cutover reconcile source -&gt; target, validate lại.</li>
+      <li><strong>Strong consistency:</strong> pause write ngắn, final delta sync, validate nhanh, update alias, resume write.</li>
+      <li><strong>Eventual consistency:</strong> delta sync đến khi backlog nhỏ, capture watermark, update alias, post-cutover reconcile source -&gt; target, validate lại.</li>
     </ul>
     <h2>
-      <strong>7. No-Pause Reconcile Từ Lần 2</strong>
+      <strong>E.6 No-Pause Reconcile</strong>
     </h2>
     <p>Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.</p>
     <p>
@@ -419,16 +459,15 @@ rollback: update alias topic_100001 -> topic_100001_vN]]></ac:plain-text-body>
         <ri:attachment ri:filename="05-no-pause-reconcile-race.png"/>
       </ac:image>
     </p>
-    <ac:structured-macro ac:macro-id="9e6118a6-6813-41c3-ad7a-6ab92349bd48" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="80d9c9be-2dba-48c6-bc75-d3d21ea630f5" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[T1: doc A update vào topic_100001_v2 ngay trước alias switch
 T2: alias switch topic_100001 -> topic_100001_v3
 T3: doc A update tiếp vào topic_100001_v3
 T4: reconcile copy bản doc A từ v2 sang v3]]></ac:plain-text-body>
     </ac:structured-macro>
-    <p>
-      <code>_version_</code> của hai collection không so sánh trực tiếp được vì mỗi collection sinh version riêng.</p>
-    <ac:structured-macro ac:macro-id="c8f9fbc0-7e0a-4fc8-91c0-b5600625b30e" ac:name="code" ac:schema-version="1">
+    <p><code>_version_</code> của hai collection không so sánh trực tiếp được vì mỗi collection sinh version riêng.</p>
+    <ac:structured-macro ac:macro-id="d4a498c4-945e-446f-9568-f259841bfed7" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[if doc id does not exist in new:
   insert
@@ -439,19 +478,201 @@ else:
     </ac:structured-macro>
     <p>Nếu <code>updated_at</code> không đáng tin, cần chọn application version/timestamp khác hoặc pause write ngắn.</p>
     <h2>
-      <strong>8. Alias Behavior</strong>
+      <strong>E.7 Rollback</strong>
+    </h2>
+    <p>Nếu chưa có write mới vào <code>topic_100001_v2</code>, rollback init có thể delete shadow alias để physical old hiện lại.</p>
+    <ac:structured-macro ac:macro-id="d0915472-1e79-4f71-bf50-b9211183c744" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[DELETEALIAS topic_100001]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>Nếu target đã nhận writes mới, rollback về old có thể thiếu data. Khi đó cần pause write, replay write log, dual-write, hoặc reconcile ngược.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>F. Data Migration Mechanics</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="fead8985-5ce4-45e7-93be-69dabe8d2896" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Full copy, delta sync, validation</ac:parameter>
+  <ac:rich-text-body>
+    <p>
+      <strong>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="08-full-copy-delta-watermark.png"/>
+      </ac:image>
+      </strong>
+    </p>
+    <h2>
+      <strong>F.1 Capture Watermark</strong>
+    </h2>
+    <p>Trước full copy, capture watermark từ source để bắt các insert/update phát sinh trong lúc copy.</p>
+    <ac:structured-macro ac:macro-id="3f884c70-74a8-4ff6-bc33-36da6d159bf7" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[q=*:*
+rows=1
+sort=_version_ desc
+fl=_version_
+
+initial_watermark = max_old_version_before_full_copy
+last_watermark = initial_watermark]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.2 Full Copy By Cursor</strong>
+    </h2>
+    <ul>
+      <li>Dùng cursor pagination.</li>
+      <li>Sort ổn định theo <code>id asc</code>.</li>
+      <li>Batch size configurable.</li>
+      <li>Không copy <code>_version_</code> sang target.</li>
+      <li>Chỉ copy stored fields khi dùng <code>/select</code>.</li>
+      <li>Copy fields/indexed-only fields được regenerate bởi schema target.</li>
+    </ul>
+    <ac:structured-macro ac:macro-id="05125439-4754-45ae-8f31-868e12385013" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[q=*:*
+sort=id asc
+cursorMark=*
+rows=1000]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.3 Delta Sync By _version_</strong>
+    </h2>
+    <p>Sau full copy, sync các docs có <code>_version_ &gt; last_watermark</code> từ source sang target.</p>
+    <ac:structured-macro ac:macro-id="60fe4e63-0e1c-44b8-94e1-1691c3efb955" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[q=_version_:{last_watermark TO *]
+sort=_version_ asc,id asc
+
+read docs where _version_ > last_watermark
+upsert into target
+update last_watermark
+persist progress]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.4 Deletes Handling</strong>
+    </h2>
+    <p><code>_version_</code> không bắt được hard delete. Cần soft delete, tombstone table, change log từ DB/app hoặc cấm hard delete trong migration window.</p>
+    <h2>
+      <strong>F.5 Validate Physical Old Vs Physical New</strong>
+    </h2>
+    <ul>
+      <li>Count source vs target.</li>
+      <li>Sample ids theo hash/range/random.</li>
+      <li>Business queries/facets quan trọng.</li>
+      <li>Shard/replica health.</li>
+      <li>Alias mapping.</li>
+      <li>Group alias impacted queries nếu topic nằm trong group alias.</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>G. Technical Context</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="61063a24-1cd7-4498-b439-623f6f1b135f" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Production state, schema, aliases</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>G.1 Current Production State</strong>
+    </h2>
+    <ul>
+      <li>Mỗi topic đang là một physical Solr collection riêng, ví dụ <code>topic_100001</code>.</li>
+      <li>Collection dùng <code>router.name=compositeId</code>.</li>
+      <li>Collection dùng <code>uniqueKey=id</code>.</li>
+      <li>Ban đầu collection có thể chỉ có <code>numShards=1</code>.</li>
+      <li>Production hiện chưa có alias theo logical topic name.</li>
+      <li>Nhiều app/service read/write trực tiếp vào <code>/solr/topic_100001</code>.</li>
+      <li>Khi topic tăng dữ liệu lớn, một shard dễ trở thành bottleneck cho query/indexing.</li>
+    </ul>
+    <h2>
+      <strong>G.2 Local Repo State</strong>
+    </h2>
+    <ul>
+      <li>Repo local hiện là SolrCloud sandbox, chưa phải production job service.</li>
+      <li>SolrCloud local dùng Solr <code>9.8.1</code>.</li>
+      <li>Configset <code>topic_conf</code>.</li>
+      <li>Sample collection <code>topic_4777</code>.</li>
+      <li>Script bootstrap <code>scripts/solr-init.sh</code>.</li>
+      <li>Schema trong <code>mentions_conf/managed-schema.xml</code>.</li>
+      <li>Solr config trong <code>mentions_conf/solrconfig.xml</code>.</li>
+      <li>Chưa có nightly job, DB history, migration worker, cutover automation hoặc rollback automation.</li>
+    </ul>
+    <h2>
+      <strong>G.3 Topic Collection Schema</strong>
+    </h2>
+    <ac:structured-macro ac:macro-id="a8e4fbce-758b-4d43-9a72-00ec57b4992e" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[configset: topic_conf
+schema name: topics
+schema version: 1.6
+uniqueKey: id
+required fields chính: id, domain]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Field</th>
+          <th>Ý nghĩa với migration</th>
+        </tr>
+        <tr>
+          <td><code>id</code></td>
+          <td>Unique key, indexed/stored, dùng để sort ổn định khi full copy bằng cursor.</td>
+        </tr>
+        <tr>
+          <td><code>domain</code></td>
+          <td>Required field chính trong schema.</td>
+        </tr>
+        <tr>
+          <td><code>_version_</code></td>
+          <td>Indexed/stored, dùng làm technical watermark cho delta insert/update.</td>
+        </tr>
+        <tr>
+          <td><code>updated_at</code></td>
+          <td>Candidate timestamp cho conflict policy khi reconcile không pause.</td>
+        </tr>
+        <tr>
+          <td><code>man_updated_at</code></td>
+          <td>Candidate timestamp khác cho manual/business updates.</td>
+        </tr>
+        <tr>
+          <td><code>copied_at</code></td>
+          <td>Timestamp liên quan copy/index pipeline.</td>
+        </tr>
+        <tr>
+          <td><code>last_activity</code></td>
+          <td>Candidate timestamp cho activity freshness.</td>
+        </tr>
+        <tr>
+          <td><code>last_sentiment</code></td>
+          <td>Candidate timestamp liên quan sentiment update.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Một số field <code>stored=false</code>: <code>search_text_exactly</code>, <code>sound_exactly</code>, <code>effect_exactly</code>. Khi full copy bằng <code>/select</code>, các field này không lấy trực tiếp được và cần regenerate bằng <code>copyField</code>.</p>
+    <ac:structured-macro ac:macro-id="634c65f0-2a48-48f3-b5da-0bde9204a1f4" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[copyField:
+search_text -> search_text_exactly
+effect      -> effect_exactly
+sound       -> sound_exactly
+
+dynamic fields:
+engage_* -> int
+random_* -> random]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>Update chain hiện có <code>SkipExistingDocumentsProcessorFactory</code> với <code>skipInsertIfExists=true</code>. Nếu migration/reconcile cần overwrite doc mới hơn trong target, cần endpoint hoặc update chain riêng cho upsert migration.</p>
+    <h2>
+      <strong>G.4 Alias Behavior</strong>
     </h2>
     <p>
       <strong>
-        <ac:image ac:align="center" ac:height="400">
-          <ri:attachment ri:filename="06-alias-resolution-priority.png"/>
-        </ac:image>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="06-alias-resolution-priority.png"/>
+      </ac:image>
       </strong>
     </p>
     <h3>
-      <strong>8.1 Shadow Alias</strong>
+      <strong>G.4.1 Shadow Alias</strong>
     </h3>
-    <ac:structured-macro ac:macro-id="975c174c-eb5d-4c96-ad8a-5831602fd4c2" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="f0b4ca51-518f-405a-8931-7828b52feb4c" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[physical:
   topic_100001
@@ -462,18 +683,17 @@ alias:
     </ac:structured-macro>
     <p>Physical old <code>topic_100001</code> vẫn tồn tại nhưng bị alias che khỏi regular query/update bằng path cũ.</p>
     <h3>
-      <strong>8.2 Multi-level Alias</strong>
+      <strong>G.4.2 Multi-level Alias</strong>
     </h3>
-    <ac:structured-macro ac:macro-id="0edbc38f-0e2a-48dd-bd3a-242878c42a08" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="878b5e2e-63c9-4609-b4a3-2fdd075a299f" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[alias A -> alias B -> collection]]></ac:plain-text-body>
     </ac:structured-macro>
     <p>Multi-level alias cần cẩn thận với collection admin commands và <code>followAliases=true</code>.</p>
     <h3>
-      <strong>8.3 Không dùng temp alias trỏ vào shadow name</strong>
+      <strong>G.4.3 Không dùng temp alias trỏ vào shadow name</strong>
     </h3>
-    <p>Không nên tạo alias temp trỏ vào name đã có thể trở thành shadow alias.</p>
-    <ac:structured-macro ac:macro-id="ad1b47e4-a931-4db7-a606-54271686f397" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="a37db6c3-849c-4ce5-b2d7-f5b2a477df7a" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[Không nên:
 topic_100001_temp -> topic_100001
@@ -482,15 +702,14 @@ Vì sau shadow alias có thể resolve thành:
 topic_100001_temp -> topic_100001 -> topic_100001_v2]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>9. Group Alias</strong>
+      <strong>G.5 Group Alias</strong>
     </h2>
-    <p>Production có thể có alias cấp cao trỏ tới nhiều topic.</p>
     <p>
       <ac:image ac:align="center" ac:height="400">
         <ri:attachment ri:filename="07-group-alias-shadow-alias.png"/>
       </ac:image>
     </p>
-    <ac:structured-macro ac:macro-id="8e8d49c1-2007-4c5e-b195-a905e9090da5" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="e9ac6bff-1c77-4d82-8e45-8ebc8198e94c" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[physical:
   topic_100001
@@ -503,7 +722,7 @@ aliases:
   topic_100011 -> topic_100001,topic_100002,topic_100003]]></ac:plain-text-body>
     </ac:structured-macro>
     <p>Khi query <code>/solr/topic_100011/select</code>, Solr có thể resolve:</p>
-    <ac:structured-macro ac:macro-id="946ff91f-1106-4cb1-8b59-a06541457579" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="b8621e6f-9f60-49d8-b44e-f6055c31fee7" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[topic_100011
   -> topic_100001,topic_100002,topic_100003
@@ -519,86 +738,34 @@ aliases:
         </tr>
         <tr>
           <td>Logical topic aliases</td>
-          <td>
-            <code>topic_100011 -&gt; topic_100001,topic_100002,topic_100003</code>
-          </td>
+          <td><code>topic_100011 -&gt; topic_100001,topic_100002,topic_100003</code></td>
           <td>Tự đi theo current version nhưng tạo multi-level alias.</td>
         </tr>
         <tr>
           <td>Physical collection versions</td>
-          <td>
-            <code>topic_100011 -&gt; topic_100001_v2,topic_100002,topic_100003</code>
-          </td>
+          <td><code>topic_100011 -&gt; topic_100001_v2,topic_100002,topic_100003</code></td>
           <td>Rõ ràng hơn nhưng phải update mọi group alias liên quan.</td>
         </tr>
       </tbody>
     </table>
     <p>Khuyến nghị v1: dùng logical topic aliases nếu muốn group query luôn đọc current version, audit <code>LISTALIASES</code> trước/sau cutover, validate group aliases bị ảnh hưởng, và research <code>ExactStatsCache</code> nếu ranking/relevance quan trọng.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>H. Alternatives / Research</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="8bfc37b0-c316-4f11-8598-4de17c7161f4" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">SPLITSHARD và REINDEXCOLLECTION</ac:parameter>
+  <ac:rich-text-body>
     <h2>
-      <strong>10. Data Migration Details</strong>
-    </h2>
-    <p>
-      <strong>
-        <ac:image ac:align="center" ac:height="400">
-          <ri:attachment ri:filename="08-full-copy-delta-watermark.png"/>
-        </ac:image>
-      </strong>
-    </p>
-    <h3>
-      <strong>10.1 Full copy</strong>
-    </h3>
-    <ul>
-      <li>Dùng cursor pagination.</li>
-      <li>Sort ổn định theo <code>id asc</code>.</li>
-      <li>Batch size configurable.</li>
-      <li>Không copy <code>_version_</code> sang target.</li>
-      <li>Chỉ copy stored fields khi dùng <code>/select</code>.</li>
-      <li>Copy fields/indexed-only fields được regenerate bởi schema target.</li>
-    </ul>
-    <ac:structured-macro ac:macro-id="c40d55bf-6f4c-4e2e-8124-c86cddb5ac6a" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[q=*:*
-sort=id asc
-cursorMark=*
-rows=1000]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h3>
-      <strong>10.2 Delta sync</strong>
-    </h3>
-    <ac:structured-macro ac:macro-id="a1d852c5-9f5a-459f-a7bb-160a211bea10" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[max(_version_) from source collection
-
-q=_version_:{last_watermark TO *]
-sort=_version_ asc,id asc]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h3>
-      <strong>10.3 Deletes</strong>
-    </h3>
-    <p>
-      <code>_version_</code> không bắt được hard delete. Cần soft delete, tombstone table, change log từ DB/app hoặc cấm hard delete trong migration window.</p>
-    <h3>
-      <strong>10.4 Validate</strong>
-    </h3>
-    <ul>
-      <li>Count source vs target.</li>
-      <li>Sample ids theo hash/range/random.</li>
-      <li>Business queries/facets quan trọng.</li>
-      <li>Shard/replica health.</li>
-      <li>Alias mapping.</li>
-      <li>Group alias impacted queries nếu topic nằm trong group alias.</li>
-    </ul>
-    <h2>
-      <strong>11. SPLITSHARD Research</strong>
+      <strong>H.1 SPLITSHARD Research</strong>
     </h2>
     <p><code>SPLITSHARD</code> là Collections API built-in của Solr để split một shard hiện có thành các sub-shards nhỏ hơn.</p>
-    <p>Ví dụ V1 API:</p>
-    <ac:structured-macro ac:macro-id="4c5f9212-6798-4fc6-9341-39ec853b9225" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="d9ac9d66-e553-4233-863e-115d6596f6ca" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=SPLITSHARD&collection=topic_100001&shard=shard1&async=split-topic-100001-shard1]]></ac:plain-text-body>
     </ac:structured-macro>
-    <p>Ví dụ V2 API:</p>
-    <ac:structured-macro ac:macro-id="63fc8388-c5ce-4608-9c02-2684c759fcf2" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="8bec3988-6349-4427-a4bf-07f9325ed237" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[POST /api/collections/topic_100001/shards
 {
@@ -632,8 +799,7 @@ sort=_version_ asc,id asc]]></ac:plain-text-body>
       </tbody>
     </table>
     <p>Kết luận: SPLITSHARD đáng PoC/staging research; production chính vẫn nên dùng custom migration nếu cần rollback nhanh, validate trước cutover và chuyển sang alias model.</p>
-    <p>PoC tối thiểu:</p>
-    <ac:structured-macro ac:macro-id="a720f10a-09b1-45ce-bbe0-ef1af171a259" ac:name="code" ac:schema-version="1">
+    <ac:structured-macro ac:macro-id="aba1ab2e-2dbb-4f87-835f-54e578c5541a" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[SPLITSHARD topic_4777 shard1
 track async status
@@ -641,17 +807,16 @@ measure IO / query latency / update latency / recovery time / replica health
 validate docs still queryable]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>12. REINDEXCOLLECTION Research</strong>
+      <strong>H.2 REINDEXCOLLECTION Research</strong>
     </h2>
     <p>
       <strong>
-        <ac:image ac:align="center" ac:height="400">
-          <ri:attachment ri:filename="09-custom-vs-reindexcollection.png"/>
-        </ac:image>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="09-custom-vs-reindexcollection.png"/>
+      </ac:image>
       </strong>
     </p>
-    <p>
-      <code>REINDEXCOLLECTION</code> là option built-in đáng research/PoC, nhưng không nên chọn làm production flow chính nếu topic vẫn nhận writes liên tục.</p>
+    <p><code>REINDEXCOLLECTION</code> là option built-in đáng research/PoC, nhưng không nên chọn làm production flow chính nếu topic vẫn nhận writes liên tục.</p>
     <table class="wrapped">
       <tbody>
         <tr>
@@ -665,18 +830,26 @@ validate docs still queryable]]></ac:plain-text-body>
       </tbody>
     </table>
     <p>Kết luận: dùng cho PoC/staging research; production chính nên dùng custom migration nếu topic vẫn nhận writes liên tục.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>I. Operations</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="b07eb083-c0b3-4f54-9a87-fcd23fdc2cdb" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">DB history, risks, checklist</ac:parameter>
+  <ac:rich-text-body>
     <h2>
-      <strong>13. DB History</strong>
+      <strong>I.1 DB History</strong>
     </h2>
     <p>
       <strong>
-        <ac:image ac:align="center" ac:height="400">
-          <ri:attachment ri:filename="10-db-history-state-machine.png"/>
-        </ac:image>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="10-db-history-state-machine.png"/>
+      </ac:image>
       </strong>
     </p>
     <h3>
-      <strong>13.1 topic_reshard_runs</strong>
+      <strong>I.1.1 topic_reshard_runs</strong>
     </h3>
     <table class="wrapped">
       <tbody>
@@ -685,100 +858,69 @@ validate docs still queryable]]></ac:plain-text-body>
           <th>Ý nghĩa</th>
         </tr>
         <tr>
-          <td>
-            <code>id</code>
-          </td>
+          <td><code>id</code></td>
           <td>ID của run</td>
         </tr>
         <tr>
-          <td>
-            <code>topic_id</code>
-          </td>
+          <td><code>topic_id</code></td>
           <td>Topic cần reshard</td>
         </tr>
         <tr>
-          <td>
-            <code>source_collection</code>
-          </td>
+          <td><code>source_collection</code></td>
           <td>Collection source</td>
         </tr>
         <tr>
-          <td>
-            <code>target_collection</code>
-          </td>
+          <td><code>target_collection</code></td>
           <td>Collection target</td>
         </tr>
         <tr>
-          <td>
-            <code>alias_name</code>
-          </td>
+          <td><code>alias_name</code></td>
           <td>Alias logical</td>
         </tr>
         <tr>
-          <td>
-            <code>source_num_shards</code>
-          </td>
+          <td><code>source_num_shards</code></td>
           <td>Số shard source</td>
         </tr>
         <tr>
-          <td>
-            <code>target_num_shards</code>
-          </td>
+          <td><code>target_num_shards</code></td>
           <td>Số shard target</td>
         </tr>
         <tr>
-          <td>
-            <code>status</code>
-          </td>
+          <td><code>status</code></td>
           <td>Trạng thái run</td>
         </tr>
         <tr>
-          <td>
-            <code>initial_watermark</code>
-          </td>
-          <td>
-            <code>_version_</code> watermark ban đầu</td>
+          <td><code>initial_watermark</code></td>
+          <td><code>_version_</code> watermark ban đầu</td>
         </tr>
         <tr>
-          <td>
-            <code>last_watermark</code>
-          </td>
+          <td><code>last_watermark</code></td>
           <td>Watermark đã xử lý gần nhất</td>
         </tr>
         <tr>
-          <td>
-            <code>full_copy_cursor</code>
-          </td>
+          <td><code>full_copy_cursor</code></td>
           <td>CursorMark để resume full copy</td>
         </tr>
         <tr>
-          <td>
-            <code>cutover_mode</code>
-          </td>
-          <td>
-            <code>shadow_alias</code>, <code>alias_switch_pause</code>, hoặc <code>alias_switch_no_pause</code>
-          </td>
+          <td><code>cutover_mode</code></td>
+          <td><code>shadow_alias</code>, <code>alias_switch_pause</code>, hoặc <code>alias_switch_no_pause</code></td>
         </tr>
         <tr>
-          <td>
-            <code>conflict_policy</code>
-          </td>
+          <td><code>conflict_policy</code></td>
           <td>Policy reconcile khi không pause</td>
         </tr>
         <tr>
-          <td>
-            <code>error_message</code>
-          </td>
+          <td><code>error_message</code></td>
           <td>Lỗi nếu có</td>
         </tr>
       </tbody>
     </table>
     <h3>
-      <strong>13.2 topic_reshard_events</strong>
+      <strong>I.1.2 topic_reshard_events</strong>
     </h3>
     <p>Events nên lưu: <code>DETECTED</code>, <code>TARGET_CREATE_REQUESTED</code>, <code>TARGET_CREATE_SUCCEEDED</code>, <code>FULL_COPY_BATCH_DONE</code>, <code>DELTA_BATCH_DONE</code>, <code>VALIDATION_FAILED</code>, <code>CUTOVER_ALIAS_UPDATED</code>, <code>RECONCILE_DONE</code>, <code>ROLLBACK_ALIAS_UPDATED</code>, <code>DONE</code>, <code>FAILED</code>.</p>
     <h2>
-      <strong>14. Risks Và Mitigations</strong>
+      <strong>I.2 Risks And Mitigations</strong>
     </h2>
     <table class="wrapped">
       <tbody>
@@ -803,8 +945,7 @@ validate docs still queryable]]></ac:plain-text-body>
           <td>Không blind upsert, compare bằng timestamp/version đáng tin</td>
         </tr>
         <tr>
-          <td>
-            <code>_version_</code> không bắt hard delete</td>
+          <td><code>_version_</code> không bắt hard delete</td>
           <td>Target giữ docs đã bị xóa</td>
           <td>Soft delete/tombstone/change log/cấm hard delete</td>
         </tr>
@@ -841,14 +982,13 @@ validate docs still queryable]]></ac:plain-text-body>
       </tbody>
     </table>
     <h2>
-      <strong>15. Research Checklist</strong>
+      <strong>I.3 Research Checklist</strong>
     </h2>
     <ul>
       <li>Có chấp nhận shadow alias lần đầu không?</li>
       <li>Pause write lần đầu được bao lâu?</li>
       <li>Có hard delete trong migration window không?</li>
-      <li>
-        <code>updated_at</code> có đáng tin cho conflict policy không?</li>
+      <li><code>updated_at</code> có đáng tin cho conflict policy không?</li>
       <li>Nếu <code>updated_at</code> không đáng tin, field/version nào là source-of-truth?</li>
       <li>Group aliases hiện đang dùng logical topic names hay physical collection names?</li>
       <li>Có app nào write vào group alias nhiều collections không?</li>
@@ -859,11 +999,23 @@ validate docs still queryable]]></ac:plain-text-body>
       <li>Scheduler/worker runtime dùng gì?</li>
       <li>Retention old collection là bao lâu?</li>
     </ul>
-    <h2>
-      <strong>16. Kết Luận</strong>
-    </h2>
-    <p>Production v1 nên dùng custom migration thay vì SPLITSHARD trực tiếp hoặc REINDEXCOLLECTION.</p>
-    <ac:structured-macro ac:macro-id="f80794ba-488a-4175-96b7-23ccbd96b28e" ac:name="code" ac:schema-version="1">
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>J. Conclusion</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="7f7a0227-90c0-4690-a032-8e49b35be4c5" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Kết luận triển khai</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li>Custom migration là hướng chính cho production v1 vì topic vẫn nhận writes liên tục.</li>
+      <li>Lần init dùng shadow alias + pause write mạnh để giữ nguyên endpoint <code>/solr/topic_100001</code>.</li>
+      <li>Từ lần 2 trở đi, cutover sạch hơn bằng cách update alias sang collection version mới.</li>
+      <li>No-pause cutover chỉ nên dùng khi reconcile có conflict policy đáng tin.</li>
+      <li>Group alias cần audit trước/sau cutover, đặc biệt khi member là shadow alias.</li>
+      <li>SPLITSHARD và REINDEXCOLLECTION chỉ nên dùng cho PoC/research trước khi cân nhắc production.</li>
+    </ul>
+    <ac:structured-macro ac:macro-id="1c023f07-a874-47d0-ba93-7df4f67e5773" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[Lần init:
   custom full copy + delta sync
@@ -877,48 +1029,8 @@ Lần 2 trở đi:
   rollback bằng update alias về version trước
   có thể no-pause nếu reconcile có conflict policy đáng tin]]></ac:plain-text-body>
     </ac:structured-macro>
-    <p>Group alias cần được audit trước/sau cutover. Wiki này là bản upload/share chi tiết; <code>docs/reshard-topic-collection-tech-spec.md</code> là source of truth kỹ thuật trong repo.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
 <p>
   <br/>
 </p>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>E.</strong> </span> <strong> <span style="color: rgb(0,0,255);"> Conclusion</span> </strong>
-</h1>
-<ac:structured-macro ac:macro-id="7b368c41-03fa-41a6-a8fb-0d8122796e93" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Kết luận triển khai</ac:parameter>
-  <ac:rich-text-body>
-    <ul>
-      <li>Custom migration là hướng chính cho production v1 vì topic vẫn nhận writes liên tục.</li>
-      <li>Lần init dùng shadow alias + pause write mạnh để giữ nguyên endpoint <code>/solr/topic_100001</code>.</li>
-      <li>Từ lần 2 trở đi, cutover sạch hơn bằng cách update alias sang collection version mới.</li>
-      <li>No-pause cutover chỉ nên dùng khi reconcile có conflict policy đáng tin.</li>
-      <li>Group alias cần audit trước/sau cutover, đặc biệt khi member là shadow alias.</li>
-      <li>REINDEXCOLLECTION chỉ nên dùng cho PoC/research nếu không chấp nhận source read-only lâu.</li>
-    </ul>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<p>
-  <br/>
-</p>
-<div>
-  <div class="o-popup-tag o-bg-white o-border o-rounded o-shadow" style="width: 400.0px;top: 0.0px;left: 0.0px;display: none;">
-    <div>
-      <ul class="o-nav o-nav-tabs o-pop-nav">
-        <li class="o-nav-item">
-          <div class="o-nav-link o-active">Look up</div>
-        </li>
-        <li class="o-nav-item">
-          <div class="o-nav-link">Translate</div>
-        </li>
-        <li class="o-nav-item">
-          <div class="o-nav-link">Setting</div>
-        </li>
-      </ul>
-      <div class="o-selected-result o-pt-1">
-        <div>Searching for ...</div>
-      </div>
-    </div>
-  </div>
-</div>
