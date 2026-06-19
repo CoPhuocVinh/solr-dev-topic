@@ -109,9 +109,9 @@
     <ul>
       <li>Tự động reshard topic collection trong SolrCloud 9 khi dữ liệu vượt ngưỡng, ví dụ topic đạt khoảng 40 triệu records.</li>
       <li>Production có nhiều app/service gọi trực tiếp <code>/solr/topic_xxx</code>, nên v1 không giả định đổi app endpoint.</li>
-      <li>Hướng chính là custom migration: tạo target collection version mới, copy bằng <code>_version_</code> cursor, validate, rồi cutover.</li>
+      <li>Hướng chính là custom migration: tạo target collection version mới, copy theo cursor, upsert buffer, save cursor progress, requeue/resume, rồi alias cutover.</li>
       <li>Lần cutover đầu tiên giữ endpoint cũ bằng <strong>shadow alias</strong>; từ lần 2 trở đi update alias sang collection version mới.</li>
-      <li>Validate physical old vs physical new phải chạy trước cutover alias.</li>
+      <li>Worker chỉ save cursor sau khi upsert thành công để resume an toàn và tránh mất data.</li>
       <li>Giữ old collection theo retention policy để rollback.</li>
     </ul>
     <p>
@@ -138,72 +138,152 @@
     </h2>
     <p>
       <ac:image ac:align="center" ac:height="360">
-        <ri:attachment ri:filename="11-detect-resharding-topic-layer.png"/>
+        <ri:attachment ri:filename="Solr Resharding - Init (4).png"/>
       </ac:image>
     </p>
     <ol>
       <li>
         <p><strong>Schedule detect job</strong></p>
         <ul>
-          <li><strong>Action:</strong> chạy job theo schedule, ví dụ <code>00:00</code> mỗi ngày.</li>
-          <li><strong>Output:</strong> tạo detect run cho ngày hiện tại nếu schedule enabled.</li>
-          <li><strong>Persist:</strong> lưu detect run/state để lần chạy sau không enqueue trùng.</li>
+          <li><strong>Action:</strong> job detect chạy định kỳ lúc <code>00:00</code> mỗi ngày.</li>
+          <li><strong>Output:</strong> bắt đầu một detect run mới.</li>
+          <li><strong>Notes:</strong> đây chỉ là detect/enqueue layer, chưa copy data.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Check active migration</strong></p>
+        <p><strong>Get List Collection And Num Shards On Solr</strong></p>
         <ul>
-          <li><strong>Action:</strong> query DB history để kiểm tra topic hoặc detect run đang active.</li>
-          <li><strong>Output:</strong> nếu có active run thì skip topic/run đó.</li>
-          <li><strong>Persist:</strong> không tạo message mới khi topic đang migrate.</li>
+          <li><strong>Action:</strong> query Solr để lấy toàn bộ topic collections và số shard hiện tại.</li>
+          <li><strong>Source:</strong> Solr Topic metadata.</li>
+          <li><strong>Output:</strong> danh sách collection kèm <code>num_shards</code>.</li>
+          <li><strong>Persist:</strong> có thể lưu snapshot collection list nếu cần audit detect run.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+[
+  { "collection": "topic_100001", "num_shards": 1 },
+  { "collection": "topic_100002", "num_shards": 2 },
+  { "collection": "topic_100003", "num_shards": 4 }
+]
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Query Active Jobs For Solr Collection List</strong></p>
+        <ul>
+          <li><strong>Action:</strong> query MongoDB <code>Resharding Job Collection</code> theo collection list vừa lấy.</li>
+          <li><strong>Filter:</strong> chỉ lấy job active với status <code>NEW</code> hoặc <code>RUNNING</code>.</li>
+          <li><strong>Batch:</strong> chunk <code>1000 collections/query</code>.</li>
+          <li><strong>Output:</strong> set các collection đang có active job.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">javascript</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+db.resharding_jobs.find({
+  collection: { $in: solrCollectionList },
+  status: { $in: ["NEW", "RUNNING"] }
+})
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Classify Collections</strong></p>
+        <ul>
+          <li><strong>Action:</strong> tách collection thành <code>Active Job Collections</code> và <code>Candidate Collections</code>.</li>
+          <li><strong>Output:</strong> active job collections đi <code>Skip Detect</code>; candidate collections đi tiếp bước lấy numDocs.</li>
+          <li><strong>Rule:</strong> collection đã có job <code>NEW</code> hoặc <code>RUNNING</code> thì không tạo job mới để tránh duplicate.</li>
         </ul>
       </li>
       <li>
-        <p><strong>List Solr collections</strong></p>
+        <p><strong>Skip Detect For Active Job Collections</strong></p>
         <ul>
-          <li><strong>Action:</strong> gọi Collections API <code>LIST</code> hoặc đọc inventory nội bộ.</li>
-          <li><strong>Output:</strong> danh sách candidate collections dạng <code>topic_*</code>.</li>
-          <li><strong>Persist:</strong> lưu snapshot list collection nếu cần audit detect run.</li>
+          <li><strong>Action:</strong> bỏ qua detect cho collection đã có active job.</li>
+          <li><strong>Output:</strong> không insert job mới, không push queue message mới.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Filter active/current collections</strong></p>
+        <p><strong>Get Num Documents Per Collection</strong></p>
         <ul>
-          <li><strong>Action:</strong> bỏ old version, target version đang migrate, inactive collection và collection không phải topic.</li>
-          <li><strong>Output:</strong> danh sách active/current topic collections cần kiểm tra ngưỡng.</li>
-          <li><strong>Persist:</strong> lưu skipped reason nếu cần debug detect.</li>
+          <li><strong>Action:</strong> với candidate collections, query số docs từng collection.</li>
+          <li><strong>Batch:</strong> <code>100 per request</code>.</li>
+          <li><strong>Output:</strong> danh sách candidate kèm <code>num_shards</code> và <code>num_docs</code>.</li>
         </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+[
+  { "collection": "topic_100001", "num_shards": 1, "num_docs": 45000000 },
+  { "collection": "topic_100002", "num_shards": 5, "num_docs": 32000000 }
+]
+]]></ac:plain-text-body>
+        </ac:structured-macro>
       </li>
       <li>
-        <p><strong>Get doc count and shard count</strong></p>
+        <p><strong>Check Need Reshard</strong></p>
         <ul>
-          <li><strong>Action:</strong> lấy doc count bằng <code>/solr/{collection}/select?q=*:*&amp;rows=0&amp;wt=json</code>.</li>
-          <li><strong>Action:</strong> lấy shard/router/health bằng <code>CLUSTERSTATUS</code>.</li>
-          <li><strong>Output:</strong> có <code>doc_count</code>, <code>current_num_shards</code>, router và replica health.</li>
+          <li><strong>Block:</strong> <code>Is (Num Docs / 10M) &lt;= CurrentShards?</code></li>
+          <li><strong>Logic:</strong> <code>targetShards = ceil(numDocs / 10M)</code>.</li>
+          <li><strong>YES:</strong> <code>targetShards &lt;= currentShards</code>, current shards đủ rồi, flow đi <code>Skip Detect</code>.</li>
+          <li><strong>NO:</strong> <code>targetShards &gt; currentShards</code>, collection cần reshard, flow đi insert job <code>NEW</code>.</li>
         </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">text</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+numDocs = 45M
+currentShards = 1
+targetShards = ceil(45M / 10M) = 5
+5 > 1 => cần reshard
+]]></ac:plain-text-body>
+        </ac:structured-macro>
       </li>
       <li>
-        <p><strong>Calculate target shards</strong></p>
+        <p><strong>Insert Init Resharding Of Collection With Status NEW Into DB</strong></p>
         <ul>
-          <li><strong>Action:</strong> tính <code>target_num_shards = ceil(doc_count / target_docs_per_shard)</code>.</li>
-          <li><strong>Output:</strong> topic qualify khi <code>target_num_shards &gt; current_num_shards</code>.</li>
-          <li><strong>Persist:</strong> lưu <code>doc_count</code>, <code>current_num_shards</code>, <code>target_num_shards</code> vào run candidate.</li>
+          <li><strong>Action:</strong> insert job mới vào MongoDB với status <code>NEW</code>.</li>
+          <li><strong>Rule:</strong> insert job trước khi push queue để worker luôn load được job từ DB.</li>
         </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "collection": "topic_100001",
+  "target_collection": "topic_100001_v2",
+  "current_shards": 1,
+  "target_shards": 5,
+  "status": "NEW",
+  "last_cursor": null,
+  "copied_count": 0,
+  "created_at": "...",
+  "updated_at": "..."
+}
+]]></ac:plain-text-body>
+        </ac:structured-macro>
       </li>
       <li>
-        <p><strong>Build queue message</strong></p>
+        <p><strong>Build Message</strong></p>
         <ul>
-          <li><strong>Action:</strong> build payload cho topic cần reshard.</li>
-          <li><strong>Output:</strong> message có <code>topic_id</code>, <code>source_collection</code>, <code>doc_count</code>, <code>current_num_shards</code>, <code>target_num_shards</code>, <code>is_init</code>.</li>
-          <li><strong>Persist:</strong> gắn message với detect run để idempotent.</li>
+          <li><strong>Action:</strong> build payload gửi qua queue cho worker Part 2.</li>
         </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "collection": "topic_100001",
+  "target_collection": "topic_100001_v2",
+  "current_shards": 1,
+  "target_shards": 5
+}
+]]></ac:plain-text-body>
+        </ac:structured-macro>
       </li>
       <li>
-        <p><strong>Push to queue</strong></p>
+        <p><strong>Push To Queue</strong></p>
         <ul>
-          <li><strong>Action:</strong> push vào queue <code>data.resharding_solr_topic</code>.</li>
-          <li><strong>Output:</strong> 1 topic/message chờ worker xử lý.</li>
-          <li><strong>Persist:</strong> mark candidate đã enqueue để tránh duplicate message.</li>
+          <li><strong>Queue:</strong> <code>data.resharding_solr_topic</code>.</li>
+          <li><strong>Action:</strong> push message vào queue.</li>
+          <li><strong>Batch:</strong> <code>1 topic per message</code>.</li>
+          <li><strong>Output:</strong> worker Part 2 sẽ consume message và xử lý reshard.</li>
         </ul>
       </li>
     </ol>
@@ -212,97 +292,194 @@
     </h2>
     <p>
       <ac:image ac:align="center" ac:height="330">
-        <ri:attachment ri:filename="12-resharding-solr-topic-layer.png"/>
+        <ri:attachment ri:filename="Solr Resharding - Init (5).png"/>
       </ac:image>
     </p>
     <ol>
       <li>
-        <p><strong>Consume queue</strong></p>
+        <p><strong>Consume Message From Queue</strong></p>
         <ul>
-          <li><strong>Action:</strong> worker nhận message từ <code>data.resharding_solr_topic</code>.</li>
-          <li><strong>Output:</strong> lấy được topic reshard job với source collection và target shard count.</li>
-          <li><strong>Persist:</strong> ack message chỉ sau khi run state đã được tạo hoặc resume an toàn.</li>
+          <li><strong>Queue:</strong> <code>data.resharding_solr_topic</code>.</li>
+          <li><strong>Action:</strong> worker consume message.</li>
+          <li><strong>Batch:</strong> <code>10 per handle or 30s</code>.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "collection": "topic_100001",
+  "target_collection": "topic_100001_v2",
+  "current_shards": 1,
+  "target_shards": 5
+}
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Load Resharding Job From DB</strong></p>
+        <ul>
+          <li><strong>DB:</strong> MongoDB <code>Resharding Job Collection</code>.</li>
+          <li><strong>Action:</strong> load job record theo <code>collection</code> hoặc <code>target_collection</code>.</li>
+          <li><strong>Read fields:</strong> <code>status</code>, <code>collection</code>, <code>target_collection</code>, <code>last_cursor</code>, <code>target_shards</code>, <code>copied_count</code>.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Lock and check run/version</strong></p>
+        <p><strong>Check Job Status</strong></p>
         <ul>
-          <li><strong>Action:</strong> lock theo <code>topic_id</code> hoặc <code>source_collection</code>, rồi check DB run/version.</li>
-          <li><strong>Output:</strong> tạo run mới hoặc resume run đang <code>PAUSED</code>.</li>
-          <li><strong>Persist:</strong> lưu trạng thái run để chỉ một worker xử lý một topic tại một thời điểm.</li>
+          <li><strong>Status chính:</strong> <code>NEW</code>, <code>RUNNING</code>, <code>DONE</code>.</li>
+          <li><strong>NEW:</strong> acquire job lock, set status sang <code>RUNNING</code>, rồi đi tiếp <code>Check Target Collection Exists</code>.</li>
+          <li><strong>RUNNING:</strong> resume job đang xử lý dở, không skip, rồi đi tiếp <code>Check Target Collection Exists</code>.</li>
+          <li><strong>DONE/status khác:</strong> skip duplicate message, không xử lý thêm.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Create target collection</strong></p>
+        <p><strong>Check Target Collection Exists</strong></p>
         <ul>
-          <li><strong>Action:</strong> tạo collection mới như <code>topic_xxx_v2</code>.</li>
-          <li><strong>Output:</strong> target collection có shard count mới và sẵn sàng nhận writes từ migration worker.</li>
-          <li><strong>Persist:</strong> lưu <code>target_collection</code>, configset/router/replication policy đã preserve từ source.</li>
+          <li><strong>Action:</strong> kiểm tra target collection đã tồn tại trên Solr chưa.</li>
+          <li><strong>YES:</strong> target đã được tạo trước đó, đi tiếp copy data.</li>
+          <li><strong>NO:</strong> tạo target collection với số shard mới, rồi đi tiếp copy data.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">text</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+old collection: topic_100001
+target collection: topic_100001_v2
+current shards: 1
+target shards: 5
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Read Old Collection By Cursor</strong></p>
+        <ul>
+          <li><strong>Action:</strong> query old collection theo cursor hiện tại.</li>
+          <li><strong>Batch:</strong> <code>200 docs/query</code>.</li>
+          <li><strong>Notes:</strong> cursor có thể là cursorMark hoặc <code>_version_</code> cursor tùy implementation.</li>
+          <li><strong>Important:</strong> không copy field <code>_version_</code> sang target.</li>
+          <li><strong>Output:</strong> một batch docs từ old collection.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Copy by _version_ cursor</strong></p>
+        <p><strong>Append Docs To Upsert Buffer</strong></p>
         <ul>
-          <li><strong>Action:</strong> query source bằng <code>cursorMark</code>, sort <code>_version_ asc,id asc</code>, upsert vào target.</li>
-          <li><strong>Action:</strong> không copy <code>_version_</code> từ source sang target.</li>
-          <li><strong>Output:</strong> target bắt được docs theo thứ tự version tăng dần, gồm cả docs mới phát sinh trong lúc copy.</li>
-          <li><strong>Persist:</strong> lưu <code>full_copy_cursor</code>, <code>last_seen_version</code> và copied count.</li>
+          <li><strong>Action:</strong> append docs vừa đọc vào upsert buffer.</li>
+          <li><strong>Example:</strong> <code>200 docs/query</code>, sau <code>50 queries</code> thì buffer có <code>10,000 docs</code>.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Persist cursor and requeue</strong></p>
+        <p><strong>Check Buffer &gt;= 10,000 Docs</strong></p>
         <ul>
-          <li><strong>Action:</strong> lưu <code>full_copy_cursor</code>, copied count và batch progress.</li>
-          <li><strong>Output:</strong> nếu batch/run quá lớn thì set <code>PAUSED</code> và requeue.</li>
-          <li><strong>Persist:</strong> worker có thể resume từ cursor cuối cùng nếu restart.</li>
+          <li><strong>YES:</strong> upsert buffer sang target collection.</li>
+          <li><strong>NO:</strong> check old collection còn docs không.</li>
+          <li><strong>Rule:</strong> block upsert nên gọi là <code>Upsert Buffer To Target Collection</code>, vì dùng cho cả buffer đủ <code>10,000</code> và buffer cuối nhỏ hơn <code>10,000</code>.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Pause and final cursor check</strong></p>
+        <p><strong>Handle Buffer Not Full</strong></p>
         <ul>
-          <li><strong>Action:</strong> pause/block writes ngắn rồi resume cursor từ progress cuối cùng.</li>
-          <li><strong>Output:</strong> nếu cursor không trả thêm docs mới, target đã bắt kịp source.</li>
-          <li><strong>Persist:</strong> lưu final copied count và final cursor state trước validate.</li>
+          <li><strong>Block:</strong> <code>Has More Docs From Old Collection?</code></li>
+          <li><strong>YES:</strong> quay lại <code>Read Old Collection By Cursor</code>.</li>
+          <li><strong>NO:</strong> old collection hết docs, upsert buffer cuối dù nhỏ hơn <code>10,000 docs</code>.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">text</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+buffer cuối còn 4,300 docs
+old collection hết docs
+=> upsert 4,300 docs cuối
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Upsert Buffer To Target Collection</strong></p>
+        <ul>
+          <li><strong>Action:</strong> upsert toàn bộ docs trong buffer sang target collection.</li>
+          <li><strong>Target:</strong> <code>topic_100001_v2</code>.</li>
+          <li><strong>Important:</strong> không gửi <code>_version_</code> từ old collection; Solr target tự sinh <code>_version_</code> mới.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Validate physical old vs physical new</strong></p>
+        <p><strong>Save Cursor Progress To DB</strong></p>
         <ul>
-          <li><strong>Action:</strong> check count, sample ids, business queries/facets và shard/replica health.</li>
-          <li><strong>Output:</strong> chỉ cho phép cutover khi validation pass hoặc nằm trong tolerance đã định nghĩa.</li>
-          <li><strong>Persist:</strong> lưu validation result vào run history.</li>
+          <li><strong>Action:</strong> sau khi upsert thành công, save cursor vào DB.</li>
+          <li><strong>Important rule:</strong> chỉ save cursor sau khi upsert thành công; không save cursor ngay sau query để tránh mất data nếu worker chết trước upsert.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "last_cursor": "cursor_of_last_successfully_upserted_doc",
+  "copied_count": 123456,
+  "status": "RUNNING",
+  "updated_at": "..."
+}
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Check Copied &gt;= 1M Docs In This Message</strong></p>
+        <ul>
+          <li><strong>Action:</strong> kiểm tra số docs đã copy trong message hiện tại.</li>
+          <li><strong>YES:</strong> build resume message, push lại queue, job vẫn giữ status <code>RUNNING</code>.</li>
+          <li><strong>NO:</strong> check old collection còn docs không; nếu còn docs thì tiếp tục copy trong cùng message, nếu hết docs thì đi alias cutover.</li>
+        </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "collection": "topic_100001",
+  "target_collection": "topic_100001_v2",
+  "cursor": "last_saved_cursor",
+  "mode": "RESUME"
+}
+]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p><strong>Build Messages Requeue And Push To Queue</strong></p>
+        <ul>
+          <li><strong>Action:</strong> build resume message và push lại queue <code>data.resharding_solr_topic</code>.</li>
+          <li><strong>Reason:</strong> worker không giữ một message quá lâu.</li>
+          <li><strong>Threshold:</strong> <code>1M docs/message</code>.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Alias cutover</strong></p>
+        <p><strong>Alias Already Exists?</strong></p>
         <ul>
-          <li><strong>Action:</strong> chỉ chạy sau validate pass; init dùng shadow alias, các lần sau update alias.</li>
-          <li><strong>Output:</strong> app đọc/ghi qua endpoint cũ nhưng traffic đi vào target collection mới.</li>
-          <li><strong>Persist:</strong> lưu <code>cutover_at</code> và alias mapping sau cutover.</li>
+          <li><strong>Action:</strong> sau khi hết docs từ old collection, check alias topic đã tồn tại chưa.</li>
+          <li><strong>NO:</strong> đây là lần init, create topic alias <code>topic_100001 -&gt; topic_100001_v2</code>.</li>
+          <li><strong>YES:</strong> đây là lần reshard sau, switch alias sang target collection, ví dụ <code>topic_100001 -&gt; topic_100001_v3</code>.</li>
         </ul>
       </li>
       <li>
-        <p><strong>Mark done and retain old</strong></p>
+        <p><strong>Mark Job DONE And Save Final Cursor</strong></p>
         <ul>
-          <li><strong>Action:</strong> set run <code>DONE</code> sau cutover thành công.</li>
-          <li><strong>Output:</strong> migration completed, old collection vẫn được giữ để rollback.</li>
-          <li><strong>Persist:</strong> lưu retention deadline cho old collection.</li>
+          <li><strong>Action:</strong> sau khi alias create/switch thành công, update job <code>DONE</code>.</li>
+          <li><strong>Output:</strong> job kết thúc; duplicate message sau đó sẽ bị skip vì job đã <code>DONE</code>.</li>
         </ul>
+        <ac:structured-macro ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">json</ac:parameter>
+          <ac:plain-text-body><![CDATA[
+{
+  "status": "DONE",
+  "final_cursor": "...",
+  "completed_at": "...",
+  "updated_at": "..."
+}
+]]></ac:plain-text-body>
+        </ac:structured-macro>
       </li>
     </ol>
-    <p><strong>Note:</strong> diagram có thể chưa phản ánh đúng flow mới; runbook production phải enforce <code>copy by _version_ cursor -> pause/final cursor check -> validate before alias cutover</code>.</p>
     <h2>
       <strong>D.3 Queue Payload</strong>
     </h2>
     <ac:structured-macro ac:macro-id="84576289-fd94-486e-8eee-d85014f4653f" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">json</ac:parameter>
       <ac:plain-text-body><![CDATA[{
-  "topic_id": "100001",
-  "source_collection": "topic_100001",
-  "doc_count": 40000000,
-  "current_num_shards": 1,
-  "target_num_shards": 4,
-  "is_init": true
+  "collection": "topic_100001",
+  "target_collection": "topic_100001_v2",
+  "current_shards": 1,
+  "target_shards": 5
 }]]></ac:plain-text-body>
     </ac:structured-macro>
   </ac:rich-text-body>
@@ -320,10 +497,10 @@
     <ul>
       <li>Tự động detect topic lớn cần tăng shard.</li>
       <li>Tạo collection version mới với số shard phù hợp hơn.</li>
-      <li>Migrate dữ liệu bằng copy theo <code>_version_</code> cursor.</li>
-      <li>Validate dữ liệu trước cutover.</li>
+      <li>Migrate dữ liệu bằng cursor copy, upsert buffer và cursor progress lưu trong DB.</li>
+      <li>Resume an toàn khi worker requeue hoặc retry message.</li>
       <li>Giữ endpoint cũ <code>/solr/topic_xxx</code> cho các app hiện tại.</li>
-      <li>Cutover an toàn bằng alias và giữ old collection để rollback.</li>
+      <li>Cutover bằng alias create/switch và giữ old collection để rollback.</li>
     </ul>
     <p><strong>Constraint quan trọng:</strong> production có nhiều app/service đang gọi trực tiếp <code>/solr/topic_xxx</code>; vì vậy lần cutover đầu tiên cần dùng shadow alias để giữ nguyên endpoint cũ.</p>
     <h2>
@@ -331,21 +508,22 @@
     </h2>
     <p>Không chọn hướng split shard trực tiếp trên collection cũ làm flow chính. Hướng production an toàn hơn là tạo collection mới rồi migrate.</p>
     <ol>
-      <li>Nightly detect topic vượt ngưỡng.</li>
-      <li>Tính số shard cần thiết.</li>
-      <li>Tạo target collection version mới, ví dụ <code>topic_100001_v2</code>.</li>
-      <li>Copy old -&gt; new bằng <code>_version_</code> cursor.</li>
-      <li>Pause/block writes ngắn trong window validate/cutover.</li>
-      <li>Validate old vs new.</li>
-      <li>Cutover bằng shadow alias hoặc alias switch.</li>
-      <li>Giữ old collection để rollback.</li>
+      <li>Detect job chạy định kỳ, lấy topic collections và số shard hiện tại từ Solr.</li>
+      <li>Query DB để bỏ qua collection đã có job active status <code>NEW</code> hoặc <code>RUNNING</code>.</li>
+      <li>Tính <code>targetShards = ceil(numDocs / 10M)</code> cho candidate collections.</li>
+      <li>Nếu cần reshard, insert job <code>NEW</code> rồi push message vào <code>data.resharding_solr_topic</code>.</li>
+      <li>Worker consume message, load job từ DB và xử lý theo status <code>NEW</code>, <code>RUNNING</code>, <code>DONE</code>.</li>
+      <li>Worker tạo target collection nếu chưa tồn tại, ví dụ <code>topic_100001_v2</code>.</li>
+      <li>Worker đọc old collection theo cursor, append vào upsert buffer, upsert target và save cursor sau khi upsert thành công.</li>
+      <li>Khi copied đạt khoảng <code>1M docs/message</code>, worker requeue resume message và giữ job status <code>RUNNING</code>.</li>
+      <li>Khi copy hết old collection, worker create/switch alias rồi mark job <code>DONE</code>.</li>
     </ol>
     <ac:structured-macro ac:macro-id="e78115d7-f2af-4726-9b84-552eeb8af080" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[topic_100001
 current_shards = 1
-doc_count = 40M
-target_shards = 2 hoặc 4 tùy policy
+doc_count = 45M
+target_shards = ceil(45M / 10M) = 5
 target_collection = topic_100001_v2]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
@@ -384,14 +562,15 @@ app:
     <ac:structured-macro ac:macro-id="7217e627-182f-4a04-9a70-ea9a57bea787" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[1. Detect topic_100001 đạt ngưỡng.
-2. Tạo physical collection mới topic_100001_v2 với số shard mới.
-3. Copy topic_100001 -> topic_100001_v2 bằng _version_ cursor.
-4. Persist cursor/progress vào DB history để resume được.
-5. Pause/block writes ngắn cho topic_100001.
-6. Final cursor check để đảm bảo target đã bắt kịp source.
-7. Validate physical old vs physical new.
-8. Create shadow alias topic_100001 -> topic_100001_v2.
-9. Resume writes.]]></ac:plain-text-body>
+2. Insert job NEW và push message vào data.resharding_solr_topic.
+3. Worker load job, lock job và set RUNNING.
+4. Worker tạo target collection topic_100001_v2 nếu chưa tồn tại.
+5. Worker đọc topic_100001 theo cursor, batch 200 docs/query.
+6. Worker append docs vào upsert buffer và upsert sang target khi buffer đạt 10,000 docs.
+7. Worker save cursor vào DB sau khi upsert thành công.
+8. Worker requeue resume message khi copied đạt 1M docs/message.
+9. Khi old collection hết docs, worker create shadow alias topic_100001 -> topic_100001_v2.
+10. Worker mark job DONE và lưu final_cursor.]]></ac:plain-text-body>
     </ac:structured-macro>
     <h3>
       <strong>E.3.3 After state</strong>
@@ -412,6 +591,7 @@ app:
     <h2>
       <strong>E.4 Later Reshard Runs</strong>
     </h2>
+    <p>Sau lần init, logical endpoint <code>topic_100001</code> đã là alias. Các lần sau worker copy từ collection version đang active sang target version mới, rồi switch alias.</p>
     <p>
       <strong>
       <ac:image ac:align="center" ac:height="400">
@@ -434,16 +614,19 @@ cutover: update alias topic_100001 -> topic_100001_vN+1
 rollback: update alias topic_100001 -> topic_100001_vN]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>E.5 Cutover Modes</strong>
+      <strong>E.5 Worker Resume And Idempotency</strong>
     </h2>
     <ul>
-      <li><strong>Strong consistency:</strong> copy theo <code>_version_</code> cursor, pause/block writes ngắn, final cursor check, validate new = old, update alias, resume write.</li>
-      <li><strong>Eventual consistency:</strong> chỉ nên dùng nếu có change log hoặc conflict policy đáng tin; copy theo cursor đến khi target bắt kịp source, update alias không pause, reconcile bằng application version rồi validate lại.</li>
+      <li>Worker chỉ save <code>last_cursor</code> sau khi upsert buffer sang target thành công.</li>
+      <li>Nếu worker crash sau upsert nhưng trước khi save cursor, batch có thể được upsert lại; target phải idempotent theo unique key <code>id</code>.</li>
+      <li>Nếu message duplicate tới sau khi job đã <code>DONE</code>, worker load job từ DB và skip.</li>
+      <li>Nếu copied trong message hiện tại đạt khoảng <code>1M docs</code>, worker build resume message, push lại queue và giữ job status <code>RUNNING</code>.</li>
+      <li><code>FAILED</code> là terminal error status cho lỗi cần retry/manual intervention.</li>
     </ul>
     <h2>
-      <strong>E.6 No-Pause Reconcile Risk</strong>
+      <strong>E.6 Optional No-Pause/Reconcile Risk</strong>
     </h2>
-    <p>Đây không phải main flow production v1. Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.</p>
+    <p>Đây là risk path tùy chọn, không phải main flow production v1. Nếu cần reconcile giữa source và target sau alias switch, không được blind upsert.</p>
     <p>
       <ac:image ac:align="center" ac:height="400">
         <ri:attachment ri:filename="05-no-pause-reconcile-race.png"/>
@@ -466,7 +649,7 @@ else if source.updated_at > target.updated_at:
 else:
   skip]]></ac:plain-text-body>
     </ac:structured-macro>
-    <p>Nếu <code>updated_at</code> không đáng tin, cần chọn application version/timestamp khác hoặc pause write ngắn.</p>
+    <p>Nếu <code>updated_at</code> không đáng tin, cần chọn application version/timestamp khác hoặc thiết kế change log riêng trước khi dùng no-pause reconcile.</p>
     <h2>
       <strong>E.7 Rollback</strong>
     </h2>
@@ -475,71 +658,77 @@ else:
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[DELETEALIAS topic_100001]]></ac:plain-text-body>
     </ac:structured-macro>
-    <p>Nếu target đã nhận writes mới, rollback về old có thể thiếu data. Khi đó cần pause write, replay write log, dual-write, hoặc reconcile ngược.</p>
+    <p>Nếu target đã nhận writes mới, rollback về old có thể thiếu data. Khi đó cần replay write log, dual-write, reconcile ngược, hoặc quy định rollback window ngắn theo runbook.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
 <h1>
   <span style="color: rgb(51,102,255);"> <strong>F. Data Migration Mechanics</strong> </span>
 </h1>
 <ac:structured-macro ac:macro-id="fead8985-5ce4-45e7-93be-69dabe8d2896" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Version cursor copy and validation</ac:parameter>
+  <ac:parameter ac:name="title">Cursor copy, upsert buffer, requeue</ac:parameter>
   <ac:rich-text-body>
-    <p>
-      <strong>
-      <ac:image ac:align="center" ac:height="400">
-        <ri:attachment ri:filename="08-full-copy-delta-watermark.png"/>
-      </ac:image>
-      </strong>
-    </p>
     <h2>
-      <strong>F.1 Copy By _version_ Cursor</strong>
+      <strong>F.1 Read Old Collection By Cursor</strong>
     </h2>
     <ul>
-      <li>Dùng cursor pagination.</li>
-      <li>Sort theo <code>_version_ asc,id asc</code> để worker đi theo thứ tự version tăng dần.</li>
-      <li>Batch size configurable.</li>
+      <li>Worker đọc old collection theo cursor hiện tại.</li>
+      <li>Batch size: <code>200 docs/query</code>.</li>
+      <li>Cursor có thể là <code>cursorMark</code> hoặc <code>_version_</code> cursor tùy implementation.</li>
+      <li>Nếu chọn <code>_version_</code> cursor, sort theo <code>_version_ asc,id asc</code>.</li>
+      <li>Nếu dùng <code>cursorMark</code>, vẫn cần sort ổn định để resume không bị lệch.</li>
       <li>Không copy <code>_version_</code> sang target.</li>
       <li>Chỉ copy stored fields khi dùng <code>/select</code>.</li>
       <li>Copy fields/indexed-only fields được regenerate bởi schema target.</li>
-      <li>Persist <code>full_copy_cursor</code>, <code>last_seen_version</code>, copied count để resume được.</li>
     </ul>
     <ac:structured-macro ac:macro-id="05125439-4754-45ae-8f31-868e12385013" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[q=*:*
 sort=_version_ asc,id asc
 cursorMark=*
-rows=1000]]></ac:plain-text-body>
+rows=200]]></ac:plain-text-body>
     </ac:structured-macro>
     <h2>
-      <strong>F.2 Final Cursor Check</strong>
-    </h2>
-    <p>Trước validate/cutover, pause/block writes ngắn rồi resume cursor từ progress cuối cùng để đảm bảo target đã bắt kịp source.</p>
-    <ac:structured-macro ac:macro-id="60fe4e63-0e1c-44b8-94e1-1691c3efb955" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[q=*:*
-sort=_version_ asc,id asc
-cursorMark=<last_cursor>
-rows=1000
-
-if no new docs:
-  validate
-else:
-  copy final batch and persist progress]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>F.3 Deletes Handling</strong>
-    </h2>
-    <p><code>_version_</code> cursor không bắt được hard delete nếu doc đã biến mất khỏi source trước khi worker đọc tới. Cần soft delete, tombstone table, change log từ DB/app hoặc cấm hard delete trong migration window.</p>
-    <h2>
-      <strong>F.4 Validate Physical Old Vs Physical New</strong>
+      <strong>F.2 Upsert Buffer</strong>
     </h2>
     <ul>
-      <li>Count source vs target.</li>
-      <li>Sample ids theo hash/range/random.</li>
-      <li>Business queries/facets quan trọng.</li>
-      <li>Shard/replica health.</li>
-      <li>Alias mapping.</li>
-      <li>Group alias impacted queries nếu topic nằm trong group alias.</li>
+      <li>Docs đọc từ old collection được append vào upsert buffer.</li>
+      <li>Khi buffer đạt <code>10,000 docs</code>, upsert buffer sang target collection.</li>
+      <li>Nếu old collection hết docs và buffer cuối nhỏ hơn <code>10,000 docs</code>, vẫn upsert buffer cuối.</li>
+      <li>Tên block nên là <code>Upsert Buffer To Target Collection</code> vì dùng cho cả batch đầy và batch cuối.</li>
+    </ul>
+    <h2>
+      <strong>F.3 Save Cursor After Upsert</strong>
+    </h2>
+    <p>Chỉ save cursor sau khi upsert thành công. Không save cursor ngay sau query, vì nếu worker chết trước khi upsert thì có thể mất dữ liệu.</p>
+    <ac:structured-macro ac:macro-id="60fe4e63-0e1c-44b8-94e1-1691c3efb955" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">json</ac:parameter>
+      <ac:plain-text-body><![CDATA[{
+  "last_cursor": "cursor_of_last_successfully_upserted_doc",
+  "copied_count": 123456,
+  "status": "RUNNING",
+  "updated_at": "..."
+}]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.4 Requeue Threshold</strong>
+    </h2>
+    <ul>
+      <li>Worker không giữ một message quá lâu.</li>
+      <li>Nếu copied trong message hiện tại đạt khoảng <code>1M docs</code>, worker build resume message và push lại queue.</li>
+      <li>Job vẫn giữ status <code>RUNNING</code>; lần sau worker resume từ cursor đã lưu.</li>
+    </ul>
+    <h2>
+      <strong>F.5 Deletes Handling</strong>
+    </h2>
+    <p>Cursor copy không bắt được hard delete nếu doc đã biến mất khỏi source trước khi worker đọc tới. Cần soft delete, tombstone table, change log từ DB/app hoặc cấm hard delete trong migration window.</p>
+    <h2>
+      <strong>F.6 Operational Constants</strong>
+    </h2>
+    <ul>
+      <li>Read old collection: <code>200 docs/query</code>.</li>
+      <li>Upsert buffer: <code>10,000 docs/upsert</code>.</li>
+      <li>Requeue threshold: <code>1M docs/message</code>.</li>
+      <li>Queue consume: <code>10 messages/handle or 30s</code>.</li>
     </ul>
   </ac:rich-text-body>
 </ac:structured-macro>
@@ -593,7 +782,7 @@ required fields chính: id, domain]]></ac:plain-text-body>
         </tr>
         <tr>
           <td><code>id</code></td>
-          <td>Unique key, indexed/stored, dùng làm tie-breaker khi copy bằng <code>_version_</code> cursor.</td>
+          <td>Unique key, indexed/stored, dùng cho idempotent upsert và làm tie-breaker khi sort cursor.</td>
         </tr>
         <tr>
           <td><code>domain</code></td>
@@ -601,11 +790,11 @@ required fields chính: id, domain]]></ac:plain-text-body>
         </tr>
         <tr>
           <td><code>_version_</code></td>
-          <td>Indexed/stored, dùng để sort copy theo version cursor.</td>
+          <td>Indexed/stored, có thể dùng cho version cursor nếu implementation chọn hướng này; không copy sang target.</td>
         </tr>
         <tr>
           <td><code>updated_at</code></td>
-          <td>Candidate timestamp cho conflict policy khi reconcile không pause.</td>
+          <td>Optional candidate timestamp cho reconcile/risk path, không phải main migration path.</td>
         </tr>
         <tr>
           <td><code>man_updated_at</code></td>
@@ -727,7 +916,7 @@ aliases:
         </tr>
       </tbody>
     </table>
-    <p>Khuyến nghị v1: dùng logical topic aliases nếu muốn group query luôn đọc current version, audit <code>LISTALIASES</code> trước/sau cutover, validate group aliases bị ảnh hưởng, và research <code>ExactStatsCache</code> nếu ranking/relevance quan trọng.</p>
+    <p>Khuyến nghị v1: dùng logical topic aliases nếu muốn group query luôn đọc current version, audit <code>LISTALIASES</code> trước/sau cutover, check group aliases bị ảnh hưởng, và research <code>ExactStatsCache</code> nếu ranking/relevance quan trọng.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
 <h1>
@@ -773,11 +962,11 @@ aliases:
         </tr>
         <tr>
           <td>Built-in trong Solr; không cần tự viết custom copy worker; không cần đổi app endpoint vì vẫn là cùng collection; Solr tự xử lý hash range split.</td>
-          <td>In-place operation trên production collection; rollback khó hơn alias switch; không có target collection riêng để validate trước cutover; không giúp chuyển sang alias model; ít kiểm soát DB history, copy cursor, validate và rollback policy; topic 40M docs có thể ảnh hưởng IO/CPU/recovery/latency.</td>
+          <td>In-place operation trên production collection; rollback khó hơn alias switch; không có target collection riêng; không giúp chuyển sang alias model; ít kiểm soát DB history, cursor progress và rollback policy; topic 40M docs có thể ảnh hưởng IO/CPU/recovery/latency.</td>
         </tr>
       </tbody>
     </table>
-    <p>Kết luận: SPLITSHARD đáng PoC/staging research; production chính vẫn nên dùng custom migration nếu cần rollback nhanh, validate trước cutover và chuyển sang alias model.</p>
+    <p>Kết luận: SPLITSHARD đáng PoC/staging research; production chính vẫn nên dùng custom migration nếu cần DB history, cursor progress, alias rollback rõ hơn và chuyển sang alias model.</p>
     <ac:structured-macro ac:macro-id="aba1ab2e-2dbb-4f87-835f-54e578c5541a" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
       <ac:plain-text-body><![CDATA[SPLITSHARD topic_4777 shard1
@@ -804,7 +993,7 @@ validate docs still queryable]]></ac:plain-text-body>
         </tr>
         <tr>
           <td>Built-in trong Solr; có thể tạo target collection với shard mới; có thể hỗ trợ reindex/cutover qua alias.</td>
-          <td>Source collection read-only trong lúc reindex; 40M docs có thể thành write pause dài; có thể lossy nếu field cần reindex không stored; ít kiểm soát copy cursor, validate, DB history và rollback hơn custom migration.</td>
+          <td>Source collection read-only trong lúc reindex; 40M docs có thể thành write pause dài; có thể lossy nếu field cần reindex không stored; ít kiểm soát copy cursor, DB history, resume và rollback hơn custom migration.</td>
         </tr>
       </tbody>
     </table>
@@ -841,52 +1030,48 @@ validate docs still queryable]]></ac:plain-text-body>
           <td>ID của run</td>
         </tr>
         <tr>
-          <td><code>topic_id</code></td>
-          <td>Topic cần reshard</td>
-        </tr>
-        <tr>
-          <td><code>source_collection</code></td>
-          <td>Collection source</td>
+          <td><code>collection</code></td>
+          <td>Old/source collection cần reshard</td>
         </tr>
         <tr>
           <td><code>target_collection</code></td>
           <td>Collection target</td>
         </tr>
         <tr>
-          <td><code>alias_name</code></td>
-          <td>Alias logical</td>
+          <td><code>current_shards</code></td>
+          <td>Số shard hiện tại của old collection</td>
         </tr>
         <tr>
-          <td><code>source_num_shards</code></td>
-          <td>Số shard source</td>
-        </tr>
-        <tr>
-          <td><code>target_num_shards</code></td>
-          <td>Số shard target</td>
+          <td><code>target_shards</code></td>
+          <td>Số shard target cần tạo</td>
         </tr>
         <tr>
           <td><code>status</code></td>
-          <td>Trạng thái run</td>
+          <td><code>NEW</code> là job chờ worker; <code>RUNNING</code> là đang copy hoặc chờ resume; <code>DONE</code> là alias đã create/switch và job hoàn tất; <code>FAILED</code> là terminal error cần retry/manual intervention.</td>
         </tr>
         <tr>
-          <td><code>full_copy_cursor</code></td>
-          <td>CursorMark để resume copy</td>
-        </tr>
-        <tr>
-          <td><code>last_seen_version</code></td>
-          <td><code>_version_</code> lớn nhất đã thấy trong quá trình copy</td>
+          <td><code>last_cursor</code></td>
+          <td>Cursor của doc cuối cùng đã upsert thành công</td>
         </tr>
         <tr>
           <td><code>copied_count</code></td>
           <td>Số docs đã copy sang target</td>
         </tr>
         <tr>
-          <td><code>cutover_mode</code></td>
-          <td><code>shadow_alias</code>, <code>alias_switch_pause</code>, hoặc <code>alias_switch_no_pause</code></td>
+          <td><code>final_cursor</code></td>
+          <td>Cursor cuối cùng khi job hoàn tất</td>
         </tr>
         <tr>
-          <td><code>conflict_policy</code></td>
-          <td>Policy reconcile khi không pause</td>
+          <td><code>created_at</code></td>
+          <td>Thời gian tạo job</td>
+        </tr>
+        <tr>
+          <td><code>updated_at</code></td>
+          <td>Thời gian cập nhật job gần nhất</td>
+        </tr>
+        <tr>
+          <td><code>completed_at</code></td>
+          <td>Thời gian mark job <code>DONE</code></td>
         </tr>
         <tr>
           <td><code>error_message</code></td>
@@ -897,7 +1082,7 @@ validate docs still queryable]]></ac:plain-text-body>
     <h3>
       <strong>I.1.2 topic_reshard_events</strong>
     </h3>
-    <p>Events nên lưu: <code>DETECTED</code>, <code>TARGET_CREATE_REQUESTED</code>, <code>TARGET_CREATE_SUCCEEDED</code>, <code>COPY_BATCH_DONE</code>, <code>FINAL_CURSOR_CHECK_DONE</code>, <code>VALIDATION_FAILED</code>, <code>CUTOVER_ALIAS_UPDATED</code>, <code>RECONCILE_DONE</code>, <code>ROLLBACK_ALIAS_UPDATED</code>, <code>DONE</code>, <code>FAILED</code>.</p>
+    <p>Events nên lưu: <code>DETECTED</code>, <code>JOB_CREATED_NEW</code>, <code>MESSAGE_PUSHED</code>, <code>JOB_RUNNING</code>, <code>TARGET_CREATED</code>, <code>COPY_BATCH_UPSERTED</code>, <code>CURSOR_SAVED</code>, <code>MESSAGE_REQUEUED</code>, <code>ALIAS_CREATED</code>, <code>ALIAS_SWITCHED</code>, <code>DONE</code>, <code>FAILED</code>.</p>
     <h2>
       <strong>I.2 Risks And Mitigations</strong>
     </h2>
@@ -911,32 +1096,37 @@ validate docs still queryable]]></ac:plain-text-body>
         <tr>
           <td>Shadow alias che old physical</td>
           <td>Ops có thể tưởng <code>/solr/topic_100001</code> vẫn là old</td>
-          <td>Runbook rõ, audit aliases, validate trước cutover</td>
+          <td>Runbook rõ, audit aliases, check alias mapping trước/sau cutover</td>
         </tr>
         <tr>
           <td>Rollback init sau new writes</td>
           <td>Old thiếu writes mới</td>
-          <td>Rollback window ngắn, pause write, replay log/dual-write nếu có</td>
+          <td>Rollback window ngắn, replay log/dual-write/reconcile ngược nếu có</td>
         </tr>
         <tr>
-          <td>Write phát sinh sau validate trước cutover</td>
-          <td>Target có thể thiếu write mới dù validate pass</td>
-          <td>Pause/block writes ngắn trong window validate + alias cutover</td>
+          <td>Save cursor trước khi upsert</td>
+          <td>Worker chết giữa query và upsert có thể làm mất data</td>
+          <td>Chỉ save cursor sau khi upsert buffer thành công</td>
         </tr>
         <tr>
-          <td>No-pause reconcile stale overwrite</td>
-          <td>Bản cũ overwrite bản mới</td>
-          <td>Không blind upsert, compare bằng timestamp/application version đáng tin</td>
+          <td>Duplicate message</td>
+          <td>Worker có thể xử lý lại message đã hoàn tất</td>
+          <td>Load job từ DB và skip nếu status đã <code>DONE</code></td>
         </tr>
         <tr>
-          <td><code>_version_</code> cursor không bắt hard delete</td>
-          <td>Target giữ docs đã bị xóa</td>
-          <td>Soft delete/tombstone/change log/cấm hard delete</td>
+          <td>Worker crash sau upsert trước save cursor</td>
+          <td>Batch có thể được upsert lại khi resume</td>
+          <td>Upsert target phải idempotent theo unique key <code>id</code></td>
         </tr>
         <tr>
-          <td>Update chain skip existing</td>
-          <td>Reconcile bỏ sót update mới hơn</td>
-          <td>Dùng migration upsert endpoint/chain riêng</td>
+          <td>Message xử lý quá lâu</td>
+          <td>Worker giữ message lớn, khó retry/resume</td>
+          <td>Requeue khi copied đạt khoảng <code>1M docs/message</code></td>
+        </tr>
+        <tr>
+          <td>Hard delete trong lúc copy</td>
+          <td>Target có thể giữ doc đã bị xóa khỏi source</td>
+          <td>Soft delete/tombstone/change log/cấm hard delete trong migration window</td>
         </tr>
         <tr>
           <td>SPLITSHARD in-place operation</td>
@@ -946,7 +1136,7 @@ validate docs still queryable]]></ac:plain-text-body>
         <tr>
           <td>Group alias đổi data ngầm</td>
           <td>Group alias đọc current version sau cutover topic con</td>
-          <td>Audit <code>LISTALIASES</code>, validate group alias, ghi policy rõ</td>
+          <td>Audit <code>LISTALIASES</code>, check group alias, ghi policy rõ</td>
         </tr>
         <tr>
           <td>Alias nhiều collections ảnh hưởng scoring</td>
@@ -970,10 +1160,8 @@ validate docs still queryable]]></ac:plain-text-body>
     </h2>
     <ul>
       <li>Có chấp nhận shadow alias lần đầu không?</li>
-      <li>Pause write lần đầu được bao lâu?</li>
       <li>Có hard delete trong migration window không?</li>
-      <li><code>updated_at</code> có đáng tin cho conflict policy không?</li>
-      <li>Nếu <code>updated_at</code> không đáng tin, field/version nào là source-of-truth?</li>
+      <li>Nếu chọn optional reconcile/no-pause risk path, <code>updated_at</code> hoặc field/version nào là source-of-truth?</li>
       <li>Group aliases hiện đang dùng logical topic names hay physical collection names?</li>
       <li>Có app nào write vào group alias nhiều collections không?</li>
       <li>Có cần <code>ExactStatsCache</code> cho query qua alias nhiều collections không?</li>
@@ -993,25 +1181,32 @@ validate docs still queryable]]></ac:plain-text-body>
   <ac:rich-text-body>
     <ul>
       <li>Custom migration là hướng chính cho production v1 vì topic vẫn nhận writes liên tục.</li>
-      <li>Lần init dùng shadow alias + pause/block writes ngắn khi validate/cutover để giữ nguyên endpoint <code>/solr/topic_100001</code>.</li>
-      <li>Từ lần 2 trở đi, cutover sạch hơn bằng cách update alias sang collection version mới.</li>
-      <li>No-pause cutover chỉ nên dùng khi có change log hoặc conflict policy đáng tin.</li>
+      <li>Part 1 detect tạo job <code>NEW</code> trong DB rồi push message vào <code>data.resharding_solr_topic</code>.</li>
+      <li>Part 2 worker xử lý job <code>NEW/RUNNING/DONE</code>, copy theo cursor, upsert buffer, save cursor sau upsert và requeue để resume.</li>
+      <li>Lần init dùng shadow alias để giữ nguyên endpoint <code>/solr/topic_100001</code>.</li>
+      <li>Từ lần 2 trở đi, worker switch alias sang collection version mới sau khi copy xong.</li>
+      <li>Duplicate message được skip khi job đã <code>DONE</code>.</li>
       <li>Group alias cần audit trước/sau cutover, đặc biệt khi member là shadow alias.</li>
       <li>SPLITSHARD và REINDEXCOLLECTION chỉ nên dùng cho PoC/research trước khi cân nhắc production.</li>
     </ul>
     <ac:structured-macro ac:macro-id="1c023f07-a874-47d0-ba93-7df4f67e5773" ac:name="code" ac:schema-version="1">
       <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Lần init:
-  custom copy by _version_ cursor
-  pause/block writes ngắn khi validate + cutover
-  create shadow alias topic_100001 -> topic_100001_v2
-  rollback bằng DELETEALIAS
+      <ac:plain-text-body><![CDATA[Part 1:
+  detect topic cần reshard
+  insert job NEW
+  push queue data.resharding_solr_topic
 
-Lần 2 trở đi:
-  custom copy by _version_ cursor
-  update alias topic_100001 -> topic_100001_vN+1
-  rollback bằng update alias về version trước
-  no-pause chỉ khi có change log/conflict policy đáng tin]]></ac:plain-text-body>
+Part 2:
+  consume message
+  load job from DB
+  handle NEW/RUNNING/DONE
+  create target collection if needed
+  read old by cursor
+  upsert buffer to target
+  save cursor after upsert success
+  requeue at 1M docs/message
+  alias create/switch
+  mark DONE]]></ac:plain-text-body>
     </ac:structured-macro>
   </ac:rich-text-body>
 </ac:structured-macro>

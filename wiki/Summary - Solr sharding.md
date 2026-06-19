@@ -8,10 +8,10 @@ Mục tiêu chính:
 
 - Tự động detect topic lớn cần tăng shard.
 - Tạo collection version mới với số shard phù hợp hơn.
-- Migrate dữ liệu bằng copy theo `_version_` cursor.
-- Validate dữ liệu trước cutover.
+- Migrate dữ liệu bằng cursor copy, upsert buffer và cursor progress lưu trong DB.
+- Resume an toàn khi worker requeue hoặc retry message.
 - Giữ endpoint cũ `/solr/topic_xxx` cho các app hiện tại.
-- Cutover an toàn bằng alias.
+- Cutover bằng alias create/switch.
 - Giữ old collection để rollback.
 
 Bối cảnh quan trọng của production:
@@ -26,10 +26,11 @@ Flow tổng quát:
 detect topic lớn
 -> tính số shard mới
 -> tạo target collection version mới
--> copy dữ liệu bằng _version_ cursor
--> pause/block writes ngắn
--> validate dữ liệu new = old
--> cutover bằng shadow alias hoặc alias switch
+-> copy theo cursor + upsert buffer
+-> save cursor sau upsert
+-> requeue/resume khi cần
+-> alias create/switch
+-> mark DONE
 -> giữ old collection để rollback
 ```
 
@@ -85,10 +86,10 @@ Các field quan trọng cho reshard/migration:
 
 | Field | Ý nghĩa với migration |
 |---|---|
-| `id` | Unique key, indexed/stored, dùng làm tie-breaker khi copy bằng `_version_` cursor. |
+| `id` | Unique key, indexed/stored, dùng cho idempotent upsert và làm tie-breaker khi sort cursor. |
 | `domain` | Required field chính trong schema. |
-| `_version_` | Indexed/stored, dùng để sort copy theo version cursor. |
-| `updated_at` | Candidate timestamp cho conflict policy khi reconcile không pause. |
+| `_version_` | Indexed/stored, có thể dùng cho version cursor nếu implementation chọn hướng này; không copy sang target. |
+| `updated_at` | Optional candidate timestamp cho reconcile/risk path, không phải main migration path. |
 | `man_updated_at` | Candidate timestamp khác cho manual/business updates. |
 | `copied_at` | Timestamp liên quan copy/index pipeline. |
 | `last_activity` | Candidate timestamp cho activity freshness. |
@@ -138,10 +139,10 @@ Flow:
 1. Nightly detect topic vượt ngưỡng.
 2. Tính số shard cần thiết.
 3. Tạo target collection version mới, ví dụ topic_100001_v2.
-4. Copy old -> new bằng `_version_` cursor.
-5. Pause/block writes ngắn trong window validate/cutover.
-6. Validate old vs new.
-7. Cutover bằng shadow alias hoặc alias switch.
+4. Worker copy old -> new bằng cursor, upsert buffer và save cursor sau upsert.
+5. Worker requeue/resume khi copied đạt khoảng `1M docs/message`.
+6. Khi copy hết old collection, worker alias create/switch.
+7. Worker mark job `DONE`.
 8. Giữ old collection để rollback.
 ```
 
@@ -155,36 +156,57 @@ target_shards = 2 hoặc 4 tùy policy
 target_collection = topic_100001_v2
 ```
 
-### 4.1 General Implementation Steps
+### 4.1 Part 1 - Detect Resharding Topic Layer
 
-Các bước implement tổng quát theo 2 layer detect/enqueue và worker/migration:
+Part 1 chạy định kỳ, tìm collection cần reshard, tạo job `NEW` trong DB, rồi push message qua queue.
 
-1. Schedule detect job chạy mỗi ngày, ví dụ `00:00`.
-2. Check active migration để không enqueue trùng topic đang migrate.
-3. Scan Solr collections bằng Collections API hoặc inventory nội bộ.
-4. Filter active/current topic collections, bỏ qua old version và target version đang migrate.
-5. Calculate `doc_count`, `current_num_shards`, `target_num_shards`; policy tham khảo là `target_num_shards = ceil(doc_count / 10_000_000)`, nhưng nên để configurable.
-6. Push message vào queue `data.resharding_solr_topic`, mỗi message đại diện cho một topic cần reshard.
-7. Worker consume queue, lock theo `topic_id` hoặc `source_collection`, rồi check DB run/version.
-8. Create target collection version mới, ví dụ `topic_100001_v2`, preserve configset/router/replication policy từ source.
-9. Copy by `_version_` cursor từ source sang target, sort theo `_version_ asc, id asc`.
-10. Persist cursor/requeue nếu batch lớn hoặc worker cần pause/resume.
-11. Pause/block writes ngắn trước validate/cutover.
-12. Final cursor check để đảm bảo không còn docs mới chưa copy.
-13. Validate physical old vs physical new trước khi cutover alias.
-14. Cutover alias: lần init dùng shadow alias, từ lần 2 trở đi update alias sang version mới.
-15. Mark done và retain old collection theo rollback/retention policy.
+1. Schedule detect job lúc `00:00` mỗi ngày.
+2. Get list collection and num shards on Solr.
+3. Query Active Jobs For Solr Collection List status IN [NEW, RUNNING], chunk `1000 collections/query`.
+4. Classify collections:
+   - Active job collections -> skip detect.
+   - Candidate collections -> lấy numDocs.
+5. Get num documents per candidate collection, batch `100 per request`.
+6. Check need reshard bằng `targetShards = ceil(numDocs / 10M)`.
+7. Nếu `targetShards <= currentShards` thì skip detect.
+8. Insert Init Resharding Of Collection With Status NEW Into DB nếu `targetShards > currentShards`.
+9. Build message.
+10. Push queue `data.resharding_solr_topic`, batch `1 topic per message`.
+
+### 4.2 Part 2 - Resharding Solr Topic Layer
+
+Part 2 worker consume message, xử lý job `NEW/RUNNING/DONE`, copy data theo cursor, upsert theo buffer, requeue nếu đạt mốc 1M docs/message, cutover alias, rồi mark `DONE`.
+
+1. Consume message từ queue `data.resharding_solr_topic`, batch `10 per handle or 30s`.
+2. Load Resharding Job From DB từ MongoDB `Resharding Job Collection`.
+3. Check status:
+   - Job Status Is NEW: acquire job lock, set `RUNNING`.
+   - Job Status Is RUNNING: resume job đang xử lý dở.
+   - `DONE`: skip duplicate message.
+4. Check target collection exists.
+5. Nếu target chưa tồn tại, create target collection with new shards.
+6. Read old collection by cursor, batch `200 docs/query`.
+7. Append docs to upsert buffer.
+8. Nếu buffer `>= 10,000 docs`, upsert buffer sang target.
+9. Nếu buffer `< 10,000 docs`:
+   - còn docs thì đọc tiếp.
+   - hết docs thì upsert buffer cuối.
+10. Sau upsert thành công, save cursor progress vào DB.
+11. Copied >= 1M Docs In This Message: build resume message và push lại queue.
+12. Nếu chưa đạt 1M và còn docs, tiếp tục copy trong cùng message.
+13. Nếu hết docs, alias cutover:
+   - alias chưa có thì create topic alias.
+   - alias đã có thì switch alias sang target collection.
+14. Mark Job DONE And Save Final Cursor.
 
 Payload queue tối thiểu:
 
 ```json
 {
-  "topic_id": "100001",
-  "source_collection": "topic_100001",
-  "doc_count": 40000000,
-  "current_num_shards": 1,
-  "target_num_shards": 4,
-  "is_init": true
+  "collection": "topic_100001",
+  "target_collection": "topic_100001_v2",
+  "current_shards": 1,
+  "target_shards": 5
 }
 ```
 
@@ -209,14 +231,15 @@ app:
 
 ```text
 1. Detect topic_100001 đạt ngưỡng.
-2. Tạo physical collection mới topic_100001_v2 với số shard mới.
-3. Copy topic_100001 -> topic_100001_v2 bằng _version_ cursor.
-4. Persist cursor/progress vào DB history để resume được.
-5. Pause/block writes ngắn cho topic_100001.
-6. Final cursor check để đảm bảo target đã bắt kịp source.
-7. Validate physical old vs physical new.
-8. Create shadow alias topic_100001 -> topic_100001_v2.
-9. Resume writes.
+2. Insert job NEW và push message vào data.resharding_solr_topic.
+3. Worker load job, lock job và set RUNNING.
+4. Worker tạo target collection topic_100001_v2 nếu chưa tồn tại.
+5. Worker đọc topic_100001 theo cursor, batch 200 docs/query.
+6. Worker append docs vào upsert buffer và upsert sang target khi buffer đạt 10,000 docs.
+7. Worker save cursor vào DB sau khi upsert thành công.
+8. Worker requeue resume message khi copied đạt 1M docs/message.
+9. Khi old collection hết docs, worker create shadow alias topic_100001 -> topic_100001_v2.
+10. Worker mark job DONE và lưu final_cursor.
 ```
 
 ### 5.3 After state
@@ -249,7 +272,7 @@ Sau khi delete alias:
 /solr/topic_100001 -> physical topic_100001
 ```
 
-Nếu `topic_100001_v2` đã nhận writes mới, rollback về old có thể thiếu data. Khi đó cần pause write, replay write log, dual-write, hoặc reconcile ngược.
+Nếu `topic_100001_v2` đã nhận writes mới, rollback về old có thể thiếu data. Khi đó cần replay write log, dual-write, reconcile ngược, hoặc quy định rollback window ngắn theo runbook.
 
 ## 6. Lần 2, Lần 3, Lần N
 
@@ -295,33 +318,17 @@ cutover: update alias topic_100001 -> topic_100001_vN+1
 rollback: update alias topic_100001 -> topic_100001_vN
 ```
 
-### 6.4 Cutover modes
+### 6.4 Worker resume and idempotency
 
-Strong consistency mode:
+- Worker chỉ save `last_cursor` sau khi upsert buffer sang target thành công.
+- Nếu worker crash sau upsert nhưng trước khi save cursor, batch có thể được upsert lại; target phải idempotent theo unique key `id`.
+- Nếu message duplicate tới sau khi job đã `DONE`, worker load job từ DB và skip.
+- Nếu copied trong message hiện tại đạt khoảng `1M docs`, worker build resume message, push lại queue và giữ job status `RUNNING`.
+- `FAILED` là terminal error status cho lỗi cần retry/manual intervention.
 
-```text
-pause/block writes ngắn
--> final cursor check
--> validate new = old
--> update alias
--> resume write
-```
+## 7. Optional No-Pause Reconcile Risk
 
-Eventual consistency mode:
-
-```text
-copy theo _version_ cursor đến khi target bắt kịp source
--> update alias không pause
--> app writes mới vào target
--> reconcile bằng change log/application version nếu có
--> validate lại
-```
-
-Khuyến nghị production v1 vẫn là pause/block writes ngắn khi validate và cutover. No-pause mode chỉ nên dùng nếu có change log hoặc conflict policy đáng tin.
-
-## 7. No-Pause Reconcile Risk Từ Lần 2
-
-Đây không phải main flow production v1. Nếu không pause từ lần 2, bắt buộc phải reconcile cẩn thận. Không được blind upsert.
+Đây là risk path tùy chọn, không phải main flow production v1. Nếu cần reconcile giữa source và target sau alias switch, không được blind upsert.
 
 Race condition:
 
@@ -353,7 +360,7 @@ else:
   skip
 ```
 
-Nếu `updated_at` không đáng tin, cần chọn application version/timestamp khác hoặc pause write ngắn.
+Nếu `updated_at` không đáng tin, cần chọn application version/timestamp khác hoặc thiết kế change log riêng trước khi dùng no-pause reconcile.
 
 ## 8. Alias Behavior
 
@@ -409,7 +416,7 @@ topic_100001 -> topic_100001_v2
 topic_100001_temp -> topic_100001 -> topic_100001_v2
 ```
 
-Tức là tưởng trỏ old, nhưng thực tế lại trỏ new. Điều này có thể làm validate hoặc rollback nhầm.
+Tức là tưởng trỏ old, nhưng thực tế lại trỏ new. Điều này có thể làm audit hoặc rollback nhầm.
 
 ## 9. Group Alias
 
@@ -494,22 +501,23 @@ Nhược điểm:
 - Cho phép group alias trỏ logical topic alias nếu mục tiêu là group query luôn đọc current version.
 - Không dùng group alias cho writes.
 - Audit `LISTALIASES` trước/sau cutover.
-- Validate lại các group aliases chứa topic vừa reshard sau cutover.
+- Check lại các group aliases chứa topic vừa reshard sau cutover.
 - Nếu ranking/relevance qua alias nhiều collections quan trọng, research thêm `ExactStatsCache`.
 
 ## 10. Data Migration Details
 
-### 10.1 Copy by `_version_` cursor
+### 10.1 Read old collection by cursor
 
 Khuyến nghị:
 
-- Dùng cursor pagination.
-- Sort theo `_version_ asc, id asc` để worker đi theo thứ tự version tăng dần.
-- Batch size configurable.
+- Worker đọc old collection theo cursor hiện tại.
+- Batch size: `200 docs/query`.
+- Cursor có thể là `cursorMark` hoặc `_version_` cursor tùy implementation.
+- Nếu chọn `_version_` cursor, sort theo `_version_ asc,id asc`.
+- Nếu dùng `cursorMark`, vẫn cần sort ổn định để resume không bị lệch.
 - Không copy `_version_` sang target.
 - Chỉ copy stored fields khi dùng `/select`.
 - Các copy fields/indexed-only fields được regenerate bởi schema target.
-- Persist `full_copy_cursor`, `last_seen_version`, `copied_count` để resume được.
 
 Ví dụ:
 
@@ -517,25 +525,43 @@ Ví dụ:
 q=*:*
 sort=_version_ asc,id asc
 cursorMark=*
-rows=1000
+rows=200
 ```
 
-### 10.2 Final cursor check
+### 10.2 Upsert buffer
 
-Trước validate/cutover, pause/block writes ngắn rồi chạy check cuối để đảm bảo target đã bắt kịp source.
+- Docs đọc từ old collection được append vào upsert buffer.
+- Khi buffer đạt `10,000 docs`, upsert buffer sang target collection.
+- Nếu old collection hết docs và buffer cuối nhỏ hơn `10,000 docs`, vẫn upsert buffer cuối.
+- Block nên gọi là `Upsert Buffer To Target Collection` vì dùng cho cả batch đầy và batch cuối.
 
 ```text
-q=*:*
-sort=_version_ asc,id asc
-cursorMark=<last_cursor>
-rows=1000
+200 docs/query
+50 queries => buffer 10,000 docs
 ```
 
-Nếu cursor không trả thêm docs mới, chuyển sang validate. Nếu còn docs, copy tiếp batch cuối rồi persist progress.
+### 10.3 Save cursor after upsert
 
-### 10.3 Deletes
+Chỉ save cursor sau khi upsert thành công. Không save cursor ngay sau query, vì nếu worker chết trước khi upsert thì có thể mất dữ liệu.
 
-`_version_` cursor không bắt được hard delete nếu doc đã biến mất khỏi source trước khi worker đọc tới.
+```json
+{
+  "last_cursor": "cursor_of_last_successfully_upserted_doc",
+  "copied_count": 123456,
+  "status": "RUNNING",
+  "updated_at": "..."
+}
+```
+
+### 10.4 Requeue threshold
+
+- Worker không giữ một message quá lâu.
+- Nếu copied trong message hiện tại đạt khoảng `1M docs`, worker build resume message và push lại queue.
+- Job vẫn giữ status `RUNNING`; lần sau worker resume từ cursor đã lưu.
+
+### 10.5 Deletes
+
+Cursor copy không bắt được hard delete nếu doc đã biến mất khỏi source trước khi worker đọc tới.
 
 Các hướng xử lý:
 
@@ -544,16 +570,12 @@ Các hướng xử lý:
 - Change log từ DB/app.
 - Cấm hard delete trong migration window.
 
-### 10.4 Validate
+### 10.6 Operational constants
 
-Checklist:
-
-- Count source vs target.
-- Sample ids theo hash/range/random.
-- Business queries/facets quan trọng.
-- Shard/replica health.
-- Alias mapping.
-- Group alias impacted queries nếu topic nằm trong group alias.
+- Read old collection: `200 docs/query`.
+- Upsert buffer: `10,000 docs/upsert`.
+- Requeue threshold: `1M docs/message`.
+- Queue consume: `10 messages/handle or 30s`.
 
 ## 11. SPLITSHARD Research
 
@@ -597,16 +619,16 @@ Cons:
 
 - Là in-place operation trên production collection.
 - Rollback khó hơn alias switch.
-- Không có target collection riêng để validate trước cutover.
+- Không có target collection riêng để kiểm soát độc lập.
 - Không giúp chuyển production sang alias model.
-- Ít kiểm soát DB history, copy cursor, validate và rollback policy.
+- Ít kiểm soát DB history, cursor progress và rollback policy.
 - Với topic 40M docs có thể ảnh hưởng disk IO, CPU, recovery và query/update latency.
 
 Kết luận:
 
 ```text
 SPLITSHARD đáng PoC/staging research.
-Production chính vẫn nên dùng custom migration nếu cần rollback nhanh, validate trước cutover và chuyển sang alias model.
+Production chính vẫn nên dùng custom migration nếu cần DB history, cursor progress, alias rollback rõ hơn và chuyển sang alias model.
 ```
 
 PoC tối thiểu:
@@ -633,7 +655,7 @@ Cons:
 - Source collection bị read-only trong lúc reindex.
 - Với 40M docs, thời gian read-only có thể rất dài.
 - Có thể lossy nếu field cần reindex không stored.
-- Ít kiểm soát copy cursor, validate, DB history và rollback hơn custom migration.
+- Ít kiểm soát copy cursor, DB history, resume và rollback hơn custom migration.
 
 Kết luận:
 
@@ -649,21 +671,17 @@ Production chính nên dùng custom migration nếu topic vẫn nhận writes li
 | Field | Ý nghĩa |
 |---|---|
 | `id` | ID của run |
-| `topic_id` | Topic cần reshard |
-| `source_collection` | Collection source |
+| `collection` | Old/source collection cần reshard |
 | `target_collection` | Collection target |
-| `alias_name` | Alias logical |
-| `source_num_shards` | Số shard source |
-| `target_num_shards` | Số shard target |
-| `status` | Trạng thái run |
-| `full_copy_cursor` | CursorMark để resume copy |
-| `last_seen_version` | `_version_` lớn nhất đã thấy trong quá trình copy |
+| `current_shards` | Số shard hiện tại của old collection |
+| `target_shards` | Số shard target cần tạo |
+| `status` | `NEW` là job chờ worker; `RUNNING` là đang copy hoặc chờ resume; `DONE` là alias đã create/switch và job hoàn tất; `FAILED` là terminal error cần retry/manual intervention |
+| `last_cursor` | Cursor của doc cuối cùng đã upsert thành công |
 | `copied_count` | Số docs đã copy sang target |
-| `cutover_mode` | `shadow_alias`, `alias_switch_pause`, hoặc `alias_switch_no_pause` |
-| `conflict_policy` | Policy reconcile khi không pause |
-| `started_at` | Thời gian bắt đầu |
-| `cutover_at` | Thời gian cutover |
-| `finished_at` | Thời gian kết thúc |
+| `final_cursor` | Cursor cuối cùng khi job hoàn tất |
+| `created_at` | Thời gian tạo job |
+| `updated_at` | Thời gian cập nhật job gần nhất |
+| `completed_at` | Thời gian mark job `DONE` |
 | `error_message` | Lỗi nếu có |
 
 ### 13.2 `topic_reshard_events`
@@ -671,14 +689,15 @@ Production chính nên dùng custom migration nếu topic vẫn nhận writes li
 Events nên lưu:
 
 - `DETECTED`
-- `TARGET_CREATE_REQUESTED`
-- `TARGET_CREATE_SUCCEEDED`
-- `COPY_BATCH_DONE`
-- `FINAL_CURSOR_CHECK_DONE`
-- `VALIDATION_FAILED`
-- `CUTOVER_ALIAS_UPDATED`
-- `RECONCILE_DONE`
-- `ROLLBACK_ALIAS_UPDATED`
+- `JOB_CREATED_NEW`
+- `MESSAGE_PUSHED`
+- `JOB_RUNNING`
+- `TARGET_CREATED`
+- `COPY_BATCH_UPSERTED`
+- `CURSOR_SAVED`
+- `MESSAGE_REQUEUED`
+- `ALIAS_CREATED`
+- `ALIAS_SWITCHED`
 - `DONE`
 - `FAILED`
 
@@ -686,14 +705,15 @@ Events nên lưu:
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Shadow alias che old physical | Ops có thể tưởng `/solr/topic_100001` vẫn là old | Runbook rõ, audit aliases, validate trước cutover |
-| Rollback init sau new writes | Old thiếu writes mới | Rollback window ngắn, pause write, replay log/dual-write nếu có |
-| Write phát sinh sau validate trước cutover | Target có thể thiếu write mới dù validate pass | Pause/block writes ngắn trong window validate + alias cutover |
-| No-pause reconcile stale overwrite | Bản cũ overwrite bản mới | Không blind upsert, compare bằng timestamp/application version đáng tin |
-| `_version_` cursor không bắt hard delete | Target giữ docs đã bị xóa | Soft delete/tombstone/change log/cấm hard delete |
-| Update chain skip existing | Reconcile bỏ sót update mới hơn | Dùng migration upsert endpoint/chain riêng |
+| Shadow alias che old physical | Ops có thể tưởng `/solr/topic_100001` vẫn là old | Runbook rõ, audit aliases, check alias mapping trước/sau cutover |
+| Rollback init sau new writes | Old thiếu writes mới | Rollback window ngắn, replay log/dual-write/reconcile ngược nếu có |
+| Save cursor trước khi upsert | Worker chết giữa query và upsert có thể làm mất data | Chỉ save cursor sau khi upsert buffer thành công |
+| Duplicate message | Worker có thể xử lý lại message đã hoàn tất | Load job từ DB và skip nếu status đã `DONE` |
+| Worker crash sau upsert trước save cursor | Batch có thể được upsert lại khi resume | Upsert target phải idempotent theo unique key `id` |
+| Message xử lý quá lâu | Worker giữ message lớn, khó retry/resume | Requeue khi copied đạt khoảng `1M docs/message` |
+| Hard delete trong lúc copy | Target có thể giữ doc đã bị xóa khỏi source | Soft delete/tombstone/change log/cấm hard delete trong migration window |
 | SPLITSHARD in-place operation | Split tác động trực tiếp collection production, rollback khó hơn alias switch | Chỉ PoC/staging trước; nếu dùng production thì maintenance window, async request, monitor IO/latency/recovery |
-| Group alias đổi data ngầm | Group alias đọc current version sau cutover topic con | Audit `LISTALIASES`, validate group alias, ghi policy rõ |
+| Group alias đổi data ngầm | Group alias đọc current version sau cutover topic con | Audit `LISTALIASES`, check group alias, ghi policy rõ |
 | Alias nhiều collections ảnh hưởng scoring | Ranking/relevance có thể lệch | Research `ExactStatsCache` nếu ranking quan trọng |
 | Copy 40M docs tốn tài nguyên | Tăng load Solr/network/heap | Batch size, rate limit, off-peak, retry/backoff |
 | REINDEXCOLLECTION read-only lâu | Write downtime dài | Chỉ PoC/research nếu không chấp nhận read-only lâu |
@@ -701,10 +721,8 @@ Events nên lưu:
 ## 15. Research Checklist
 
 - Có chấp nhận shadow alias lần đầu không?
-- Pause write lần đầu được bao lâu?
 - Có hard delete trong migration window không?
-- `updated_at` có đáng tin cho conflict policy không?
-- Nếu `updated_at` không đáng tin, field/version nào là source-of-truth?
+- Nếu chọn optional reconcile/no-pause risk path, `updated_at` hoặc field/version nào là source-of-truth?
 - Group aliases hiện đang dùng logical topic names hay physical collection names?
 - Có app nào write vào group alias nhiều collections không?
 - Có cần `ExactStatsCache` cho query qua alias nhiều collections không?
@@ -721,17 +739,22 @@ Production v1 nên dùng custom migration thay vì SPLITSHARD trực tiếp ho�
 Khuyến nghị:
 
 ```text
-Lần init:
-  custom copy by _version_ cursor
-  pause/block writes ngắn khi validate + cutover
-  create shadow alias topic_100001 -> topic_100001_v2
-  rollback bằng DELETEALIAS
+Part 1:
+  detect topic cần reshard
+  insert job NEW
+  push queue data.resharding_solr_topic
 
-Lần 2 trở đi:
-  custom copy by _version_ cursor
-  update alias topic_100001 -> topic_100001_vN+1
-  rollback bằng update alias về version trước
-  no-pause chỉ khi có change log/conflict policy đáng tin
+Part 2:
+  consume message
+  load job from DB
+  handle NEW/RUNNING/DONE
+  create target collection if needed
+  read old by cursor
+  upsert buffer to target
+  save cursor after upsert success
+  requeue at 1M docs/message
+  alias create/switch
+  mark DONE
 ```
 
 Group alias cần được audit trước/sau cutover. Wiki này là bản share/research chi tiết; `docs/reshard-topic-collection-tech-spec.md` là source of truth kỹ thuật trong repo.
