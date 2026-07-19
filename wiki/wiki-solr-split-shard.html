@@ -1,0 +1,1184 @@
+<h1>
+  <strong>APACHE SOLR - SPLIT SHARD</strong>
+</h1>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>A. Change Log</strong> </span>
+</h1>
+<table class="relative-table wrapped" style="width: 83.5294%;">
+  <colgroup class=""> <col class="" style="width: 8.54643%;"/> <col class="" style="width: 17.6215%;"/> <col class="" style="width: 15.2426%;"/> <col class="" style="width: 41.4973%;"/> <col class="" style="width: 17.0929%;"/> </colgroup>
+  <tbody class="">
+    <tr class="">
+      <th>Version</th>
+      <th>Date updated</th>
+      <th>Author</th>
+      <th>Description</th>
+      <th>Status</th>
+    </tr>
+    <tr>
+      <td>v1.1</td>
+      <td>
+        <div class="content-wrapper">
+          <p>20/07/2026</p>
+        </div>
+      </td>
+      <td>
+        <div class="content-wrapper">
+          <p>
+            <ac:link>
+              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+            </ac:link>
+          </p>
+        </div>
+      </td>
+      <td>Add multi-replica split, move replica cost (rewrite vs link), load distribution strategies (RF=1 vs RF=2); reorder sections; trim redundant Technical Context</td>
+      <td>
+        <div class="content-wrapper">
+          <p>
+            <ac:structured-macro ac:macro-id="a1b2c3d4-0030-4a00-9000-000000000030" ac:name="status" ac:schema-version="1">
+              <ac:parameter ac:name="colour">Yellow</ac:parameter>
+              <ac:parameter ac:name="title">DRAFT</ac:parameter>
+            </ac:structured-macro>
+          </p>
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td>v1.0</td>
+      <td>
+        <div class="content-wrapper">
+          <p>19/07/2026</p>
+        </div>
+      </td>
+      <td>
+        <div class="content-wrapper">
+          <p>
+            <ac:link>
+              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+            </ac:link>
+          </p>
+        </div>
+      </td>
+      <td>Initial SolrCloud SPLITSHARD document, split method rewrite vs link</td>
+      <td>
+        <div class="content-wrapper">
+          <p>
+            <ac:structured-macro ac:macro-id="a1b2c3d4-0001-4a00-9000-000000000001" ac:name="status" ac:schema-version="1">
+              <ac:parameter ac:name="colour">Yellow</ac:parameter>
+              <ac:parameter ac:name="title">DRAFT</ac:parameter>
+            </ac:structured-macro>
+          </p>
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>B. Executive Summary</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0002-4a00-9000-000000000002" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">SolrCloud SPLITSHARD Overview</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>Vấn đề</strong>
+    </h2>
+    <ul>
+      <li>Prod có khoảng <code>10.472</code> collection; một số collection tăng lên hàng chục triệu records (ví dụ ~40M) trong khi vẫn <code>numShards=1</code>.</li>
+      <li>Một shard lớn dễ trở thành bottleneck cho query, indexing, recovery và vận hành SolrCloud.</li>
+      <li>Cần chia nhỏ shard hiện có <strong>ngay trên collection đang chạy</strong>, không đổi endpoint, không tạo collection mới.</li>
+    </ul>
+    <h2>
+      <strong>Mục tiêu</strong>
+    </h2>
+    <ul>
+      <li>Dùng <code>SPLITSHARD</code> (Collections API built-in của Solr) để chia một shard lớn thành nhiều sub-shard nhỏ hơn mà không downtime.</li>
+      <li>Hiểu rõ hai <code>splitMethod</code>: <code>rewrite</code> và <code>link</code>, ưu/nhược điểm và khi nào dùng cái nào.</li>
+      <li>Nắm được full flow vận hành: pre-check → split async → track status → verify → cleanup parent shard → rebalance replica.</li>
+    </ul>
+    <h2>
+      <strong>Giải pháp tổng quan</strong>
+    </h2>
+    <ul>
+      <li>
+        <code>SPLITSHARD</code> chia hash range của shard gốc thành các sub-range nhỏ hơn và tạo sub-shard mới, ví dụ <code>shard1</code> → <code>shard1_0</code> + <code>shard1_1</code>.</li>
+      <li>Operation không downtime: shard gốc vẫn phục vụ query/indexing trong lúc split, sau khi xong sẽ re-route request sang sub-shards.</li>
+      <li>Shard gốc chuyển sang trạng thái <code>inactive</code> sau khi split xong và cần được cleanup bằng <code>DELETESHARD</code>.</li>
+      <li>Chọn <code>splitMethod=rewrite</code> khi cần index gọn nhẹ để move replica; chọn <code>splitMethod=link</code> khi cần split nhanh, ít tốn tài nguyên trên leader.</li>
+    </ul>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0003-4a00-9000-000000000003" ac:name="note" ac:schema-version="1">
+      <ac:rich-text-body>
+        <p>Tài liệu này tập trung vào hướng <strong>split shard in-place</strong>. Hướng custom migration (tạo collection mới + shadow alias) được mô tả riêng ở tài liệu <em>SolrCloud Topic Collection Resharding</em>.</p>
+      </ac:rich-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>C. Table Of Contents</strong> </span>
+</h1>
+<p>
+  <ac:structured-macro ac:macro-id="a1b2c3d4-0004-4a00-9000-000000000004" ac:name="toc" ac:schema-version="1"/>
+</p>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>D. SPLITSHARD Concept</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0005-4a00-9000-000000000005" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Cơ chế split shard trong SolrCloud</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>D.1 SPLITSHARD là gì</strong>
+    </h2>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">
+            <code>SPLITSHARD</code> là Collections API built-in để chia một shard hiện có thành các sub-shard nhỏ hơn ghi xuống disk.</li>
+          <li style="color: rgb(0,51,102);">Chỉ áp dụng cho collection dùng <strong>hash-based routing</strong> (tạo bằng <code>numShards</code>, router <code>compositeId</code>).</li>
+          <li style="color: rgb(0,51,102);">Không downtime: collection vẫn nhận query và indexing trong suốt quá trình split.</li>
+          <li style="color: rgb(0,51,102);">Sub-shard mới nhận số replica bằng shard gốc, cùng replica type.</li>
+          <li style="color: rgb(0,51,102);">Sau split, Solr tự issue một soft commit để docs visible ở sub-shards.</li>
+        </ul>
+      </li>
+    </ul>
+    <h2>
+      <strong>D.2 Hash range split</strong>
+    </h2>
+    <p>Mỗi shard giữ một dải hash range. SPLITSHARD chia đôi range đó cho hai sub-shard. Ví dụ shard1 có full range <code>80000000-7fffffff</code>:</p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0006-4a00-9000-000000000006" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[shard1        range = 80000000 - 7fffffff   (toàn bộ)
+
+        split (chia đôi range)
+
+shard1_0      range = 80000000 - ffffffff
+shard1_1      range = 00000000 - 7fffffff]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>
+      <ac:image ac:align="center" ac:height="360">
+        <ri:attachment ri:filename="01-splitshard-hashrange.png"/>
+      </ac:image>
+    </p>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Document thuộc sub-shard nào là do hash của <code>uniqueKey</code> rơi vào sub-range nào.</li>
+          <li style="color: rgb(0,51,102);">Có thể tự chỉ định range bằng param <code>ranges</code>, hoặc split theo <code>split.key</code> / <code>splitByPrefix</code>.</li>
+        </ul>
+      </li>
+    </ul>
+    <h2>
+      <strong>D.3 Vòng đời sau khi split</strong>
+    </h2>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0007-4a00-9000-000000000007" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Trước split:
+  shard1 (active)  -> phục vụ toàn bộ range
+
+Trong split:
+  shard1 (active)          -> vẫn nhận query/index
+  shard1_0 (construction)  -> đang build sub-index
+  shard1_1 (construction)  -> đang build sub-index
+
+Sau split:
+  shard1 (inactive)  -> ngừng route, chờ DELETESHARD cleanup
+  shard1_0 (active)  -> phục vụ nửa range
+  shard1_1 (active)  -> phục vụ nửa range]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>
+      <ac:image ac:align="center" ac:height="360">
+        <ri:attachment ri:filename="02-shard-lifecycle-states.png"/>
+      </ac:image>
+    </p>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Sub-shard được đặt tên bằng cách thêm hậu tố: <code>shard1</code> → <code>shard1_0</code>, <code>shard1_1</code>.</li>
+          <li style="color: rgb(0,51,102);">Replica đầu tiên của mỗi sub-shard <strong>luôn được đặt trên node leader của shard gốc</strong>.</li>
+          <li style="color: rgb(0,51,102);">Shard gốc <code>shard1</code> giữ nguyên data as-is nhưng chuyển sang <code>inactive</code>; cần <code>DELETESHARD</code> để dọn.</li>
+        </ul>
+      </li>
+    </ul>
+    <h3>
+      <strong>Các state của shard</strong>
+    </h3>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>State</th>
+          <th>Ý nghĩa</th>
+        </tr>
+        <tr>
+          <td>
+            <code>active</code>
+          </td>
+          <td>Shard đang phục vụ query và indexing bình thường.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>construction</code>
+          </td>
+          <td>Sub-shard đang được build trong lúc split, chưa nhận request trực tiếp.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>recovery</code>
+          </td>
+          <td>Sub-shard đang recover/replay buffered updates trước khi active.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>inactive</code>
+          </td>
+          <td>Parent shard sau split, giữ data as-is nhưng ngừng route; eligible cho <code>DELETESHARD</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+    <h2>
+      <strong>D.4 Split khi shard có nhiều replica</strong>
+    </h2>
+    <p>Khi collection có <code>replicationFactor &gt; 1</code>, một shard có nhiều replica trên nhiều node. SPLITSHARD chạy trên <strong>leader</strong> của parent shard và có vài đặc điểm cần nắm:</p>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Sub-shard mới nhận <strong>đúng số replica và cùng replica type</strong> như parent shard (ví dụ parent 3 NRT → mỗi sub-shard 3 NRT).</li>
+          <li style="color: rgb(0,51,102);">Split index được thực hiện từ index của <strong>leader parent</strong>, không phải chạy song song trên từng replica.</li>
+          <li style="color: rgb(0,51,102);">Replica đầu tiên của mỗi sub-shard luôn nằm trên <strong>node leader gốc</strong> → node này dễ thành hotspot vì gánh leader của cả 2 sub-shard.</li>
+          <li style="color: rgb(0,51,102);">Các replica còn lại của sub-shard được đặt theo placement policy rồi <strong>recover/replicate</strong> từ leader sub-shard mới.</li>
+          <li style="color: rgb(0,51,102);">Parent shard chuyển <code>inactive</code> nhưng <strong>các replica của parent vẫn tồn tại</strong> cho tới khi <code>DELETESHARD</code>.</li>
+        </ul>
+      </li>
+    </ul>
+    <p>
+      <ac:image ac:align="center" ac:height="420">
+        <ri:attachment ri:filename="08-split-multi-replica.png"/>
+      </ac:image>
+    </p>
+    <h3>
+      <strong>D.4.1 Trước split (replicationFactor = 3)</strong>
+    </h3>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-001e-4a00-9000-00000000001e" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[collection topic_100001, replicationFactor = 3
+
+              Node A              Node B              Node C
+shard1     [n1 LEADER]         [n2 replica]        [n3 replica]
+           range 80000000-7fffffff   (active, 3 replica đồng bộ)]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h3>
+      <strong>D.4.2 Trong split</strong>
+    </h3>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-001f-4a00-9000-00000000001f" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Split chạy trên LEADER shard1 (Node A):
+
+  1. Node A build sub-index shard1_0, shard1_1 từ index của leader parent.
+  2. shard1_0, shard1_1 ở state "construction" (replica đầu tiên trên Node A).
+  3. Solr đặt các replica còn lại của sub-shard sang Node B, Node C.
+  4. Các replica đó RECOVER/replicate từ leader sub-shard trên Node A.
+  5. Khi tất cả sub-shard replica active, parent shard1 chuyển INACTIVE.
+
+Trong suốt quá trình: shard1 vẫn nhận query/index bình thường.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h3>
+      <strong>D.4.3 Sau split</strong>
+    </h3>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0020-4a00-9000-000000000020" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[              Node A              Node B              Node C
+shard1_0   [n LEADER] *        [replica]           [replica]      (active)
+shard1_1   [n LEADER] *        [replica]           [replica]      (active)
+shard1     [n1]                [n2]                [n3]           (INACTIVE)
+
+* Replica đầu tiên (leader) của CẢ HAI sub-shard đều nằm trên Node A.
+  => Node A gánh 2 leader sub-shard => HOTSPOT IO/CPU.
+  => Cần rebalance sang node khác để phân tải (3 cách ở mục F).
+
+shard1 (inactive) vẫn còn 3 replica chiếm disk cho tới khi DELETESHARD.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0021-4a00-9000-000000000021" ac:name="note" ac:schema-version="1">
+      <ac:rich-text-body>
+        <p>Chi phí recovery tỉ lệ với số replica: mỗi sub-shard có <code>RF</code> replica cần build/recover, nên tổng dữ liệu phải tạo và replicate ≈ <code>2 × RF</code> bản sub-index. Với topic lớn và <code>RF</code> cao, nên chạy <code>async</code>, off-peak và cân nhắc <code>waitForFinalState=true</code> để chắc chắn mọi replica active trước khi cutover/cleanup.</p>
+      </ac:rich-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>E. Split Method: rewrite vs link</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0008-4a00-9000-000000000008" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Hai cách split: rewrite và link</ac:parameter>
+  <ac:rich-text-body>
+    <p>Param <code>splitMethod</code> quyết định cách Solr tạo index cho sub-shard. Default là <code>rewrite</code>.</p>
+    <h2>
+      <strong>E.1 rewrite (default)</strong>
+    </h2>
+    <p>
+      <strong>Ý tưởng:</strong> <code>rewrite</code> = <strong>ghi lại index từ đầu</strong>. Solr đọc lần lượt từng document của shard gốc, tính xem doc đó thuộc sub-shard nào theo hash range mới, rồi ghi vào một index <strong>hoàn toàn mới</strong> của sub-shard đó.</p>
+    <p>
+      <strong>Ví von:</strong> như <strong>chép tay một quyển sổ ra hai quyển sổ mới</strong> — đọc từng dòng rồi viết sang đúng quyển của nó. Mỗi quyển mới chỉ chứa phần dữ liệu của mình, mỏng hơn hẳn và độc lập hoàn toàn với quyển kia.</p>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Tạo index mới cho từng sub-shard.</li>
+          <li style="color: rgb(0,51,102);">Đọc từng document của shard gốc.</li>
+          <li style="color: rgb(0,51,102);">Document thuộc sub-shard nào thì ghi vào index của sub-shard đó.</li>
+        </ul>
+      </li>
+    </ul>
+    <h3>
+      <strong>Ví dụ</strong>
+    </h3>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0009-4a00-9000-000000000009" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[shard1
+   A B C D E F G H I J
+
+        split (rewrite)
+
+shard1_0
+   A B C D E
+
+shard1_1
+   F G H I J
+
+=> Mỗi sub-shard chỉ chứa dữ liệu của chính nó.
+=> Hoàn toàn độc lập.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>
+      <ac:image ac:align="center" ac:height="360">
+        <ri:attachment ri:filename="03-split-rewrite.png"/>
+      </ac:image>
+    </p>
+    <h3>
+      <strong>Ưu điểm</strong>
+    </h3>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Mỗi sub-shard chỉ chứa dữ liệu của chính nó.</li>
+          <li style="color: rgb(0,51,102);">Kích thước index của mỗi sub-shard nhỏ hơn đáng kể.</li>
+          <li style="color: rgb(0,51,102);">Move Replica nhanh hơn vì chỉ cần copy đúng dữ liệu của sub-shard.</li>
+          <li style="color: rgb(0,51,102);">Tiết kiệm dung lượng lưu trữ sau khi phân bổ shard sang các node khác.</li>
+          <li style="color: rgb(0,51,102);">Phù hợp cho production và các hệ thống cần mở rộng lâu dài.</li>
+        </ul>
+      </li>
+    </ul>
+    <h3>
+      <strong>Nhược điểm</strong>
+    </h3>
+    <ul>
+      <li style="list-style-type: none;color: rgb(153,0,0);">
+        <ul>
+          <li style="color: rgb(153,0,0);">Split chậm hơn vì phải đọc và ghi lại toàn bộ document (CPU/IO intensive).</li>
+          <li style="color: rgb(153,0,0);">Tiêu tốn nhiều CPU và Disk I/O.</li>
+          <li style="color: rgb(153,0,0);">Trong quá trình split cần nhiều dung lượng đĩa tạm thời (khuyến nghị node leader có free disk &gt; 2x kích thước shard).</li>
+          <li style="color: rgb(153,0,0);">Áp lực lên node leader khá lớn trong thời gian split.</li>
+        </ul>
+      </li>
+    </ul>
+    <h2>
+      <strong>E.2 link</strong>
+    </h2>
+    <p>
+      <strong>Ý tưởng:</strong> <code>link</code> = <strong>ánh xạ (hard link) tới file index có sẵn, không chép lại</strong>. Hard link là một "con trỏ" ở tầng filesystem trỏ vào <strong>cùng một file dữ liệu vật lý</strong> trên đĩa — nhiều tên file cùng chỉ tới một nội dung, không nhân đôi dung lượng. Solr tạo sub-shard bằng cách hard link tới đúng các file index của shard gốc, nên hai sub-shard <strong>dùng chung</strong> index gốc thay vì copy. Khác biệt duy nhất là mỗi sub-shard giữ một danh sách <code>liveDocs</code>/<code>deletedDocs</code> riêng để "ẩn" phần không thuộc mình.</p>
+    <p>
+      <strong>Ví von:</strong> như <strong>hai người đọc chung một quyển sách</strong>, mỗi người kẹp giấy note đánh dấu chỉ đọc những trang của mình — sách vẫn là <strong>một quyển duy nhất</strong>, không ai photocopy. Vì "dùng chung" nên split cực nhanh và gần như không tốn thêm disk trên node gốc; nhưng khi cần mang sub-shard sang <strong>node khác</strong> thì không còn "chung" được nữa (hard link không qua được node), buộc phải sao ra <strong>cả quyển</strong> — đó là lý do move replica của <code>link</code> nặng.</p>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Không tạo lại index.</li>
+          <li style="color: rgb(0,51,102);">Dùng filesystem hard link để dùng chung các file index của shard gốc.</li>
+          <li style="color: rgb(0,51,102);">Mỗi sub-shard vẫn nhìn thấy gần như toàn bộ index gốc.</li>
+          <li style="color: rgb(0,51,102);">Chỉ khác danh sách liveDocs/deletedDocs.</li>
+        </ul>
+      </li>
+    </ul>
+    <h3>
+      <strong>Ví dụ</strong>
+    </h3>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-000a-4a00-9000-00000000000a" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[shard1
+   A B C D E F G H I J
+
+        split (link)
+
+------------------- shard1_0 -------------------
+index
+   A B C D E F G H I J     (dùng chung qua hard link)
+live docs
+   A B C D E
+deleted docs
+   F G H I J
+
+------------------- shard1_1 -------------------
+index
+   A B C D E F G H I J     (dùng chung qua hard link)
+live docs
+   F G H I J
+deleted docs
+   A B C D E]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>
+      <ac:image ac:align="center" ac:height="360">
+        <ri:attachment ri:filename="04-split-link.png"/>
+      </ac:image>
+    </p>
+    <h3>
+      <strong>Ưu điểm</strong>
+    </h3>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Split rất nhanh.</li>
+          <li style="color: rgb(0,51,102);">Không cần ghi lại toàn bộ document.</li>
+          <li style="color: rgb(0,51,102);">CPU và Disk I/O thấp hơn rewrite.</li>
+          <li style="color: rgb(0,51,102);">Trên node leader hầu như không tăng dung lượng lưu trữ vì các sub-shard dùng chung index file thông qua hard link.</li>
+          <li style="color: rgb(0,51,102);">Phù hợp khi cần split nhanh hoặc shard rất lớn.</li>
+        </ul>
+      </li>
+    </ul>
+    <h3>
+      <strong>Nhược điểm</strong>
+    </h3>
+    <ul>
+      <li style="list-style-type: none;color: rgb(153,0,0);">
+        <ul>
+          <li style="color: rgb(153,0,0);">Mỗi sub-shard vẫn chứa gần như toàn bộ index gốc.</li>
+          <li style="color: rgb(153,0,0);">Khi Move Replica sang node khác, hard link không còn tác dụng nên phải copy gần như toàn bộ index.</li>
+          <li style="color: rgb(153,0,0);">Tốn băng thông mạng và dung lượng lưu trữ trên node đích.</li>
+          <li style="color: rgb(153,0,0);">Thời gian Move Replica thường lâu hơn rewrite.</li>
+          <li style="color: rgb(153,0,0);">Không phù hợp nếu mục tiêu là phân bổ dữ liệu vật lý gọn nhẹ giữa các node.</li>
+        </ul>
+      </li>
+    </ul>
+    <h2>
+      <strong>E.3 So sánh nhanh</strong>
+    </h2>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Tiêu chí</th>
+          <th>rewrite (default)</th>
+          <th>link</th>
+        </tr>
+        <tr>
+          <td>Cách tạo index sub-shard</td>
+          <td>Đọc &amp; ghi lại toàn bộ doc, tạo index mới</td>
+          <td>Hard link file index gốc, chỉ đổi live/deleted docs</td>
+        </tr>
+        <tr>
+          <td>Tốc độ split</td>
+          <td>Chậm (CPU/IO intensive)</td>
+          <td>Rất nhanh</td>
+        </tr>
+        <tr>
+          <td>CPU / Disk I/O khi split</td>
+          <td>Cao</td>
+          <td>Thấp</td>
+        </tr>
+        <tr>
+          <td>Disk tạm trên leader</td>
+          <td>Cần &gt; 2x kích thước shard</td>
+          <td>Gần như không tăng</td>
+        </tr>
+        <tr>
+          <td>Kích thước index mỗi sub-shard</td>
+          <td>Nhỏ, chỉ chứa data của mình</td>
+          <td>Lớn, gần như toàn bộ index gốc</td>
+        </tr>
+        <tr>
+          <td>Move Replica sang node khác</td>
+          <td>Nhanh, copy đúng data sub-shard</td>
+          <td>Chậm, phải copy gần như toàn bộ index</td>
+        </tr>
+        <tr>
+          <td>Phù hợp</td>
+          <td>Production, cần rebalance gọn nhẹ lâu dài</td>
+          <td>Cần split nhanh, shard rất lớn, chưa cần move ngay</td>
+        </tr>
+      </tbody>
+    </table>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-000b-4a00-9000-00000000000b" ac:name="tip" ac:schema-version="1">
+      <ac:rich-text-body>
+        <p>Nếu split với <code>link</code> để nhanh, sau đó vẫn nên trigger merge/optimize hoặc chấp nhận move replica tốn kém khi rebalance. Nếu mục tiêu cuối là phân bổ dữ liệu vật lý gọn giữa các node, ưu tiên <code>rewrite</code>.</p>
+      </ac:rich-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>E.4 Move Replica: rewrite vs link</strong>
+    </h2>
+    <p>Đây là điểm khác biệt quan trọng nhất về lâu dài. Sau split, replica đầu tiên của sub-shard nằm ngay trên node leader gốc, nên thường cần move/add replica sang node khác để phân tải. Chi phí move phụ thuộc hoàn toàn vào <code>splitMethod</code> đã dùng lúc split.</p>
+    <p>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="07-move-replica-cost.png"/>
+      </ac:image>
+    </p>
+    <h3>
+      <strong>E.4.1 Move replica sau khi split bằng rewrite</strong>
+    </h3>
+    <p>Index của sub-shard chỉ chứa đúng data của nó, nên move replica chỉ copy phần data đó.</p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-001b-4a00-9000-00000000001b" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Node A (leader)                         Node B (đích)
+
+shard1_0                                shard1_0
+  index: A B C D E        --- copy --->   index: A B C D E
+  (~50% size, chỉ data của mình)          (copy đúng 5 docs)
+
+=> Copy nhẹ, nhanh, ít băng thông.
+=> Disk node đích chỉ tăng đúng phần data của sub-shard.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h3>
+      <strong>E.4.2 Move replica sau khi split bằng link</strong>
+    </h3>
+    <p>Trên node gốc, sub-shard dùng chung file index gốc qua hard link nên gần như không tốn disk. Nhưng hard link chỉ có tác dụng <strong>trong cùng một filesystem/node</strong>. Khi move sang node khác, hard link không đi theo được, buộc phải copy gần như toàn bộ index gốc.</p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-001c-4a00-9000-00000000001c" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Node A (leader)                                   Node B (đích)
+
+shard1_0
+  index: A B C D E F G H I J   (hard link tới index gốc)
+  live:  A B C D E
+
+        MOVEREPLICA shard1_0 -> Node B
+        hard link KHÔNG qua được node khác
+        => phải copy TOÀN BỘ index A..J
+
+                              --- copy full index --->
+
+                                                  shard1_0
+                                                    index: A B C D E F G H I J
+                                                    (full copy, hết hard link)
+                                                    live:  A B C D E
+
+=> Copy nặng (gần như 100% index gốc), tốn băng thông + disk node đích.
+=> Move 2 sub-shard link = copy gần 2x index gốc sang node đích.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h3>
+      <strong>E.4.3 Tóm tắt chi phí move</strong>
+    </h3>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Yếu tố khi move replica</th>
+          <th>rewrite</th>
+          <th>link</th>
+        </tr>
+        <tr>
+          <td>Dữ liệu phải copy sang node đích</td>
+          <td>Chỉ data của sub-shard (~50%)</td>
+          <td>Gần như toàn bộ index gốc (~100%)</td>
+        </tr>
+        <tr>
+          <td>Băng thông mạng</td>
+          <td>Thấp</td>
+          <td>Cao</td>
+        </tr>
+        <tr>
+          <td>Disk tăng thêm ở node đích</td>
+          <td>Đúng bằng data sub-shard</td>
+          <td>Gần bằng cả index gốc</td>
+        </tr>
+        <tr>
+          <td>Thời gian move</td>
+          <td>Nhanh</td>
+          <td>Chậm</td>
+        </tr>
+        <tr>
+          <td>Mục tiêu phân bổ dữ liệu gọn giữa node</td>
+          <td>Đạt được ngay</td>
+          <td>Không đạt cho tới khi merge/optimize dọn dead data</td>
+        </tr>
+      </tbody>
+    </table>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-001d-4a00-9000-00000000001d" ac:name="note" ac:schema-version="1">
+      <ac:rich-text-body>
+        <p>Với <code>link</code>, phần dead data (docs không thuộc sub-shard nhưng vẫn nằm trong index gốc) chỉ thực sự được dọn khi Lucene merge segment hoặc chạy optimize. Trước khi đó, move replica vẫn phải kéo theo cả phần dead data. Nếu kế hoạch là rebalance sang nhiều node, <code>rewrite</code> tổng chi phí thường rẻ hơn dù split ban đầu chậm hơn.</p>
+      </ac:rich-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>F. Load Distribution After Split</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0022-4a00-9000-000000000022" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Phân tải query ra nhiều node — 3 cách xử lý sau split</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>F.1 Bối cảnh và nguyên tắc</strong>
+    </h2>
+    <p>Production hiện có nhiều collection, mix giữa RF=1 và RF=2:</p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0023-4a00-9000-000000000023" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Tổng collection        : 10.472
+Collection RF = 1      :  6.856
+Collection RF = 2      :  3.616]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>Vấn đề: một collection chứa nhiều data nằm dồn trên ít node dẫn tới query chậm và stress node. Mục tiêu của phần này là mô tả các cách phân tải data/query ra nhiều node sau khi split.</p>
+    <p>Một số điểm kỹ thuật làm cơ sở cho 3 cách bên dưới:</p>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Query phân tán chọn <strong>một replica bất kỳ cho mỗi shard</strong> (load-balance giữa các replica), <strong>không ưu tiên leader</strong>. Do đó phân tải <strong>đọc</strong> phụ thuộc replica nằm ở node nào.</li>
+          <li style="color: rgb(0,51,102);">Leader chỉ điều phối <strong>ghi</strong> (versioning, forward update tới replica).</li>
+          <li style="color: rgb(0,51,102);">Đổi leader = đổi phân tải <strong>ghi</strong>; move replica = đổi phân tải <strong>data + đọc</strong>.</li>
+          <li style="color: rgb(0,51,102);">SPLITSHARD đặt replica đầu tiên của mọi sub-shard trên <strong>node leader gốc</strong>, nên ngay sau split data vẫn dồn ở node đó cho tới khi rebalance.</li>
+        </ul>
+      </li>
+    </ul>
+    <h2>
+      <strong>F.2 Cách 1 — Đổi leader sang node khác (REBALANCELEADERS)</strong>
+    </h2>
+    <p>Chỉ áp dụng khi shard có từ 2 replica trở lên (nhóm RF=2). Đổi replica nào giữ vai trò leader, <strong>không dời data</strong>.</p>
+    <p>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="09-rebalance-leader.png"/>
+      </ac:image>
+    </p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0024-4a00-9000-000000000024" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Điều kiện: sub-shard có >= 2 replica.
+
+Trước:
+  Node A:  shard1_0 [LEADER]   shard1_1 [LEADER]
+  Node B:  shard1_0 [replica]  shard1_1 [replica]
+
+Thao tác:
+  1. Set preferredLeader cho replica shard1_1 trên Node B.
+  2. REBALANCELEADERS.
+
+Sau:
+  Node A:  shard1_0 [LEADER]   shard1_1 [replica]
+  Node B:  shard1_0 [replica]  shard1_1 [LEADER]
+
+=> Vai trò leader (ghi) chia đều A/B.
+=> Data trên mỗi node KHÔNG đổi (không copy gì).]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0025-4a00-9000-000000000025" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=ADDREPLICAPROP
+      &collection=topic_100001&shard=shard1_1
+      &replica=core_nodeX&property=preferredLeader&property.value=true
+
+GET /solr/admin/collections?action=REBALANCELEADERS&collection=topic_100001]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.3 Cách 2 — MOVEREPLICA</strong>
+    </h2>
+    <p>Áp dụng cho cả RF=1 và RF=2. Dời hẳn một replica (kèm data) sang node đích, nên data + query của sub-shard đó chuyển sang node mới.</p>
+    <p>
+      <ac:image ac:align="center" ac:height="400">
+        <ri:attachment ri:filename="10-movereplica.png"/>
+      </ac:image>
+    </p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0026-4a00-9000-000000000026" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Ví dụ RF=1 (chỉ 1 replica mỗi sub-shard):
+
+Trước (ngay sau split):
+  Node A:  shard1_0   shard1_1     <- cả 2 sub-shard dồn trên A
+  Node B:  (trống)
+
+Thao tác:
+  MOVEREPLICA shard1_1 từ Node A -> Node B.
+
+Sau:
+  Node A:  shard1_0
+  Node B:  shard1_1
+
+=> Data + đọc của shard1_1 chuyển hẳn sang B.
+=> Node A giảm ~50% data.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0027-4a00-9000-000000000027" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=MOVEREPLICA
+      &collection=topic_100001
+      &replica=core_nodeX
+      &targetNode=solr9-testing3.ynm.local:8985_solr
+
+# Chi phí copy = index của 1 sub-shard.
+#   splitMethod=rewrite -> index nhỏ  -> copy nhẹ.
+#   splitMethod=link    -> index lớn  -> copy gần như toàn bộ index gốc.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.4 Cách 3 — ADDREPLICA node khác → split → chọn leader</strong>
+    </h2>
+    <p>Thêm một replica của parent shard trên node đích trước, sau đó split, rồi bầu leader của sub-shard trên node đó; tùy chọn xóa bản dư trên node gốc.</p>
+    <p>
+      <ac:image ac:align="center" ac:height="420">
+        <ri:attachment ri:filename="11-addreplica-split-leader.png"/>
+      </ac:image>
+    </p>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0028-4a00-9000-000000000028" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Bắt đầu:
+  Node A:  shard1 [LEADER]
+  Node B:  (trống)
+
+Bước 1 - ADDREPLICA shard1 trên Node B:
+  copy TOÀN BỘ index parent (chưa split, full size) sang B
+  Node A: shard1 [LEADER]   Node B: shard1 [replica]
+
+Bước 2 - SPLITSHARD shard1 (sub-shard nhận 2 replica):
+  Node A: shard1_0 [LEADER]  shard1_1 [LEADER]
+  Node B: shard1_0 [replica] shard1_1 [replica]
+
+Bước 3 - REBALANCELEADERS: đưa leader shard1_1 sang Node B:
+  Node A: shard1_0 [LEADER]  shard1_1 [replica]
+  Node B: shard1_0 [replica] shard1_1 [LEADER]
+
+Bước 4 (tùy chọn) - DELETEREPLICA bản dư để giảm data ở A:
+  Node A: shard1_0 [LEADER]
+  Node B: shard1_1 [LEADER]]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0029-4a00-9000-000000000029" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=ADDREPLICA
+      &collection=topic_100001&shard=shard1&node=<nodeB>
+
+GET /solr/admin/collections?action=SPLITSHARD
+      &collection=topic_100001&shard=shard1&splitMethod=rewrite&async=split-1
+
+GET /solr/admin/collections?action=REBALANCELEADERS&collection=topic_100001
+
+# tùy chọn
+GET /solr/admin/collections?action=DELETEREPLICA
+      &collection=topic_100001&shard=shard1_1&replica=core_nodeY
+
+# Chi phí: bước 1 copy nguyên parent chưa split (full size)
+#          + recovery sub-shard sau split.]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>F.5 Bảng so sánh 3 cách</strong>
+    </h2>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Tiêu chí</th>
+          <th>Cách 1 — Đổi leader</th>
+          <th>Cách 2 — MOVEREPLICA</th>
+          <th>Cách 3 — ADDREPLICA → split → leader</th>
+        </tr>
+        <tr>
+          <td>Thao tác chính</td>
+          <td>REBALANCELEADERS</td>
+          <td>MOVEREPLICA</td>
+          <td>ADDREPLICA → SPLITSHARD → REBALANCELEADERS (+DELETEREPLICA)</td>
+        </tr>
+        <tr>
+          <td>Copy data vật lý?</td>
+          <td>Không</td>
+          <td>Có</td>
+          <td>Có</td>
+        </tr>
+        <tr>
+          <td>Khối lượng data copy</td>
+          <td>0</td>
+          <td>1 sub-shard (rewrite ~½ / link ~toàn bộ index gốc)</td>
+          <td>Nguyên parent chưa split (full size) + recovery sub-shard</td>
+        </tr>
+        <tr>
+          <td>Áp dụng RF</td>
+          <td>Chỉ RF ≥ 2</td>
+          <td>RF = 1 và RF = 2</td>
+          <td>RF ≥ 1 (chủ động nâng replica)</td>
+        </tr>
+        <tr>
+          <td>Ảnh hưởng phân tải GHI (write)</td>
+          <td>Có (chia leader)</td>
+          <td>Có (nếu dời replica đang là leader)</td>
+          <td>Có (chọn leader ở node đích)</td>
+        </tr>
+        <tr>
+          <td>Ảnh hưởng phân tải ĐỌC/query</td>
+          <td>Không đổi (đọc vốn đã spread theo replica)</td>
+          <td>Có (data đọc chuyển sang node đích)</td>
+          <td>Có (data đọc đặt theo node đích)</td>
+        </tr>
+        <tr>
+          <td>Data trên mỗi node (disk)</td>
+          <td>Không đổi</td>
+          <td>Giảm ở node nguồn</td>
+          <td>Kiểm soát theo node đích (+DELETEREPLICA để giảm ở node gốc)</td>
+        </tr>
+        <tr>
+          <td>Số bước thao tác</td>
+          <td>2</td>
+          <td>1 (+ DELETESHARD parent riêng)</td>
+          <td>3–4</td>
+        </tr>
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>G. End-to-End Flow</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-000c-4a00-9000-00000000000c" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Quy trình vận hành split shard</ac:parameter>
+  <ac:rich-text-body>
+    <ol>
+      <li>
+        <p>
+          <strong>Pre-check cluster status</strong>
+        </p>
+        <ul>
+          <li>
+            <strong>Action:</strong> lấy trạng thái collection, số shard, range, replica và node leader.</li>
+          <li>
+            <strong>Kiểm tra:</strong> health GREEN, free disk trên leader &gt; 2x index size (bắt buộc nếu <code>splitMethod=rewrite</code>).</li>
+        </ul>
+        <ac:structured-macro ac:macro-id="a1b2c3d4-000d-4a00-9000-00000000000d" ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">bash</ac:parameter>
+          <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=CLUSTERSTATUS&collection=topic_100001&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p>
+          <strong>Gọi SPLITSHARD (async)</strong>
+        </p>
+        <ul>
+          <li>
+            <strong>Action:</strong> split shard cần chia, luôn chạy <code>async</code> để tránh timeout (đây là long running process).</li>
+          <li>
+            <strong>Chọn method:</strong> <code>splitMethod=rewrite</code> (default) hoặc <code>splitMethod=link</code>.</li>
+        </ul>
+        <ac:structured-macro ac:macro-id="a1b2c3d4-000e-4a00-9000-00000000000e" ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">text</ac:parameter>
+          <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=SPLITSHARD
+      &collection=topic_100001
+      &shard=shard1
+      &splitMethod=rewrite
+      &async=split-topic_100001-shard1]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p>
+          <strong>Track REQUESTSTATUS</strong>
+        </p>
+        <ul>
+          <li>
+            <strong>Action:</strong> poll async request id đến khi <code>completed</code>.</li>
+          <li>
+            <strong>State:</strong> <code>running</code> → <code>completed</code> / <code>failed</code>.</li>
+        </ul>
+        <ac:structured-macro ac:macro-id="a1b2c3d4-000f-4a00-9000-00000000000f" ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">text</ac:parameter>
+          <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=REQUESTSTATUS&requestid=split-topic_100001-shard1
+
+# response.status.state = running | completed | failed]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p>
+          <strong>Verify sub-shards active</strong>
+        </p>
+        <ul>
+          <li>
+            <strong>Action:</strong> chạy lại <code>CLUSTERSTATUS</code>, verify <code>shard1_0</code> và <code>shard1_1</code> state <code>active</code>, shard gốc <code>shard1</code> state <code>inactive</code>.</li>
+          <li>
+            <strong>Validate:</strong> query một vài doc để chắc data vẫn đọc được qua collection.</li>
+        </ul>
+      </li>
+      <li>
+        <p>
+          <strong>Delete inactive parent shard</strong>
+        </p>
+        <ul>
+          <li>
+            <strong>Action:</strong> sau khi verify sub-shards ổn, xóa parent shard <code>inactive</code> để giải phóng dung lượng.</li>
+          <li>
+            <strong>Lưu ý:</strong> <code>DELETESHARD</code> chỉ xóa được shard <code>inactive</code>; không xóa được shard đang active.</li>
+        </ul>
+        <ac:structured-macro ac:macro-id="a1b2c3d4-0010-4a00-9000-000000000010" ac:name="code" ac:schema-version="1">
+          <ac:parameter ac:name="language">text</ac:parameter>
+          <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=DELETESHARD&collection=topic_100001&shard=shard1]]></ac:plain-text-body>
+        </ac:structured-macro>
+      </li>
+      <li>
+        <p>
+          <strong>Rebalance / Move Replica sang node khác</strong>
+        </p>
+        <ul>
+          <li>
+            <strong>Vì sao:</strong> replica đầu tiên của sub-shard luôn nằm trên node leader gốc → sau split, node leader gánh cả hai sub-shard. Cần rebalance để phân tải.</li>
+          <li>
+            <strong>Action:</strong> có 3 cách (đổi leader / <code>MOVEREPLICA</code> / <code>ADDREPLICA</code>→split→leader) — chi tiết flow và lệnh xem <strong>mục F. Load Distribution After Split</strong>.</li>
+        </ul>
+      </li>
+    </ol>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>H. API Reference</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0013-4a00-9000-000000000013" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">SPLITSHARD API và parameters</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>H.1 V1 API</strong>
+    </h2>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0014-4a00-9000-000000000014" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">bash</ac:parameter>
+      <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://localhost:8983/solr/admin/collections?action=SPLITSHARD&collection=topic_100001&shard=shard1&splitMethod=rewrite&async=split-1']]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>H.2 V2 API</strong>
+    </h2>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0015-4a00-9000-000000000015" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">bash</ac:parameter>
+      <ac:plain-text-body><![CDATA[curl -X POST http://localhost:8983/api/collections/topic_100001/shards \
+  -H 'Content-Type: application/json' -d '
+{
+  "split": {
+    "shard": "shard1",
+    "splitMethod": "rewrite",
+    "async": "split-1"
+  }
+}']]></ac:plain-text-body>
+    </ac:structured-macro>
+    <h2>
+      <strong>H.3 Parameters</strong>
+    </h2>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Parameter</th>
+          <th>Required</th>
+          <th>Default</th>
+          <th>Mô tả</th>
+        </tr>
+        <tr>
+          <td>
+            <code>collection</code>
+          </td>
+          <td>Yes</td>
+          <td>none</td>
+          <td>Collection chứa shard cần split.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>shard</code>
+          </td>
+          <td>Optional*</td>
+          <td>none</td>
+          <td>Tên shard cần split. Bắt buộc khi không dùng <code>split.key</code>.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>ranges</code>
+          </td>
+          <td>Optional</td>
+          <td>none</td>
+          <td>Danh sách hex hash range phân tách bằng dấu phẩy, ví dụ <code>0-1f4,1f5-3e8</code>. Cho phép chia không đều/nhiều hơn 2.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>split.key</code>
+          </td>
+          <td>Optional</td>
+          <td>none</td>
+          <td>Route key để tách riêng ra sub-shard cho key đó.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>numSubShards</code>
+          </td>
+          <td>Optional</td>
+          <td>2</td>
+          <td>Số sub-shard tạo ra, range 2–8. Chỉ dùng khi không set <code>ranges</code>/<code>split.key</code>.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>splitMethod</code>
+          </td>
+          <td>Optional</td>
+          <td>
+            <code>rewrite</code>
+          </td>
+          <td>
+            <code>rewrite</code> (tạo index mới, gọn) hoặc <code>link</code> (hard link, nhanh). Xem mục E.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>splitFuzz</code>
+          </td>
+          <td>Optional</td>
+          <td>0.0</td>
+          <td>Float &lt; 0.5, tạo variance cho range sub-shard.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>splitByPrefix</code>
+          </td>
+          <td>Optional</td>
+          <td>false</td>
+          <td>Chia đều theo prefix của compositeId (<code>&lt;prefix&gt;!&lt;suffix&gt;</code>) sao cho không cắt ngang một prefix.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>waitForFinalState</code>
+          </td>
+          <td>Optional</td>
+          <td>false</td>
+          <td>Chờ tất cả replica active mới trả về.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>timing</code>
+          </td>
+          <td>Optional</td>
+          <td>false</td>
+          <td>Trả về thông tin timing xử lý trong response.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>async</code>
+          </td>
+          <td>Optional</td>
+          <td>none</td>
+          <td>Request id để chạy bất đồng bộ, track bằng <code>REQUESTSTATUS</code>. Khuyến nghị luôn dùng.</td>
+        </tr>
+        <tr>
+          <td>
+            <code>property._name_=_value_</code>
+          </td>
+          <td>Optional</td>
+          <td>none</td>
+          <td>Set core property cho sub-shard.</td>
+        </tr>
+      </tbody>
+    </table>
+    <h2>
+      <strong>H.4 Split theo ranges tùy chỉnh</strong>
+    </h2>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-0016-4a00-9000-000000000016" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[# Chia shard1 thành 3 phần theo range tự định nghĩa
+GET /solr/admin/collections?action=SPLITSHARD
+      &collection=topic_100001
+      &shard=shard1
+      &ranges=80000000-aaaaaaa9,aaaaaaaa-d5555553,d5555554-7fffffff
+      &async=split-3way]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>I. Risks And Checklist</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0018-4a00-9000-000000000018" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Rủi ro, mitigation và checklist</ac:parameter>
+  <ac:rich-text-body>
+    <h2>
+      <strong>I.1 Risks And Mitigations</strong>
+    </h2>
+    <table class="wrapped">
+      <tbody>
+        <tr>
+          <th>Risk</th>
+          <th>Impact</th>
+          <th>Mitigation</th>
+        </tr>
+        <tr>
+          <td>rewrite thiếu disk trên leader</td>
+          <td>Split fail giữa chừng</td>
+          <td>Đảm bảo free disk &gt; 2x index size trước khi split; hoặc dùng <code>link</code></td>
+        </tr>
+        <tr>
+          <td>Split đồng bộ bị timeout</td>
+          <td>Request treo, khó theo dõi</td>
+          <td>Luôn chạy <code>async</code> và poll <code>REQUESTSTATUS</code></td>
+        </tr>
+        <tr>
+          <td>Quên xóa parent shard inactive</td>
+          <td>Tốn dung lượng, cluster state rối</td>
+          <td>Sau verify chạy <code>DELETESHARD</code> parent shard</td>
+        </tr>
+        <tr>
+          <td>Node leader gánh cả 2 sub-shard</td>
+          <td>Hotspot IO/CPU trên một node</td>
+          <td>Move/Add replica sub-shard sang node khác sau split</td>
+        </tr>
+        <tr>
+          <td>link làm move replica nặng</td>
+          <td>Move replica copy gần như toàn bộ index gốc</td>
+          <td>Dùng <code>rewrite</code> nếu mục tiêu là rebalance gọn; hoặc chấp nhận cost khi move</td>
+        </tr>
+        <tr>
+          <td>Split trên collection production rất lớn (vài chục triệu docs)</td>
+          <td>Tăng IO/CPU/latency, ảnh hưởng recovery</td>
+          <td>Chạy off-peak, async, monitor IO/latency/recovery; PoC trên staging trước</td>
+        </tr>
+        <tr>
+          <td>Rollback khó hơn alias switch</td>
+          <td>Split là in-place, không có collection version riêng</td>
+          <td>Backup/snapshot trước; cân nhắc custom migration + alias nếu cần rollback rõ ràng</td>
+        </tr>
+        <tr>
+          <td>Hard delete trong lúc split</td>
+          <td>Trạng thái doc có thể lệch</td>
+          <td>Hạn chế hard delete trong split window; verify count sau split</td>
+        </tr>
+      </tbody>
+    </table>
+    <h2>
+      <strong>I.2 Checklist</strong>
+    </h2>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">Collection có dùng hash routing (<code>compositeId</code>) không?</li>
+          <li style="color: rgb(0,51,102);">Node leader có free disk &gt; 2x index size chưa (nếu <code>rewrite</code>)?</li>
+          <li style="color: rgb(0,51,102);">Chọn <code>splitMethod</code> nào: <code>rewrite</code> (gọn, chậm) hay <code>link</code> (nhanh, nặng khi move)?</li>
+          <li style="color: rgb(0,51,102);">Có chạy <code>async</code> và có cơ chế poll <code>REQUESTSTATUS</code> chưa?</li>
+          <li style="color: rgb(0,51,102);">Sau split có verify sub-shards active và data queryable chưa?</li>
+          <li style="color: rgb(0,51,102);">Đã plan <code>DELETESHARD</code> parent shard inactive chưa?</li>
+          <li style="color: rgb(0,51,102);">Đã plan rebalance replica sub-shard sang node khác chưa (mục F)?</li>
+          <li style="color: rgb(0,51,102);">Có PoC trên staging để đo IO/latency/recovery chưa?</li>
+          <li style="color: rgb(0,51,102);">Split window có tránh peak và có monitor không?</li>
+        </ul>
+      </li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);"> <strong>J. Conclusion</strong> </span>
+</h1>
+<ac:structured-macro ac:macro-id="a1b2c3d4-0019-4a00-9000-000000000019" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Kết luận</ac:parameter>
+  <ac:rich-text-body>
+    <ul>
+      <li style="list-style-type: none;color: rgb(0,51,102);">
+        <ul>
+          <li style="color: rgb(0,51,102);">
+            <code>SPLITSHARD</code> là cách built-in để chia shard lớn in-place, không downtime, không đổi endpoint.</li>
+          <li style="color: rgb(0,51,102);">
+            <code>rewrite</code> (default): tạo index mới, sub-shard gọn, move replica nhanh, nhưng split chậm và cần &gt; 2x disk.</li>
+          <li style="color: rgb(0,51,102);">
+            <code>link</code>: hard link, split rất nhanh và nhẹ trên leader, nhưng sub-shard vẫn to gần bằng index gốc nên move replica nặng.</li>
+          <li style="color: rgb(0,51,102);">Flow chuẩn: pre-check → SPLITSHARD async → REQUESTSTATUS → verify → DELETESHARD parent → rebalance replica.</li>
+          <li style="color: rgb(0,51,102);">Split là in-place nên rollback khó hơn hướng alias; với collection cần DB history/cursor/rollback rõ hơn, cân nhắc custom migration + shadow alias.</li>
+          <li style="color: rgb(0,51,102);">Với collection rất lớn (vài chục triệu docs), nên PoC trên staging, chạy off-peak, async và monitor IO/latency/recovery trước khi làm production.</li>
+        </ul>
+      </li>
+    </ul>
+    <ac:structured-macro ac:macro-id="a1b2c3d4-001a-4a00-9000-00000000001a" ac:name="code" ac:schema-version="1">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Split shard:
+  rewrite -> index gọn, move nhanh, split chậm, cần >2x disk
+  link    -> split nhanh & nhẹ, index to, move replica nặng
+
+Flow:
+  CLUSTERSTATUS  (check health + disk)
+  SPLITSHARD     (async, chọn splitMethod)
+  REQUESTSTATUS  (poll completed)
+  CLUSTERSTATUS  (verify sub-shards active, parent inactive)
+  DELETESHARD    (xóa parent inactive)
+  ADDREPLICA/MOVEREPLICA (rebalance sang node khác)]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<p>
+  <br/>
+</p>
