@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="860" viewBox="0 0 2000 860">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#374151"/></marker>
+    <style>.title{font:700 24px Arial;fill:#111827}.box{fill:#e8f7e8;stroke:#1f2937;stroke-width:2}.gate{fill:#fef3c7;stroke:#92400e;stroke-width:2}.error{fill:#fee2e2;stroke:#b91c1c;stroke-width:2}.store{fill:#dbeafe;stroke:#2563eb;stroke-width:2}.text{font:14px Arial;fill:#111827;text-anchor:middle}.small{font:12px Arial;fill:#4b5563;text-anchor:middle}.edge{stroke:#374151;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke-dasharray:7 5}</style>
+  </defs>
+  <rect x="10" y="10" width="1980" height="840" rx="12" fill="#fff" stroke="#374151" stroke-width="2"/>
+  <text x="1000" y="42" class="title" text-anchor="middle">D.2.4–D.2.5 — Rebalance, Final Gate &amp; Parent Cleanup</text>
+  <rect class="box" x="45" y="160" width="210" height="90" rx="12"/><text class="text" x="150" y="192"><tspan x="150">Re-measure nodes</tspan><tspan x="150" dy="20">after all splits</tspan></text>
+  <rect class="box" x="315" y="160" width="225" height="90" rx="12"/><text class="text" x="428" y="192"><tspan x="428">Build desired</tspan><tspan x="428" dy="20">placement_plan</tspan></text>
+  <polygon class="gate" points="690,205 810,135 930,205 810,275"/><text class="text" x="810" y="194"><tspan x="810">Replica data</tspan><tspan x="810" dy="20">imbalanced?</tspan></text>
+  <rect class="store" x="1020" y="85" width="230" height="85" rx="12"/><text class="text" x="1135" y="117"><tspan x="1135">Save MOVE intent</tspan><tspan x="1135" dy="20">target + expected</tspan></text>
+  <rect class="box" x="1325" y="85" width="220" height="85" rx="12"/><text class="text" x="1435" y="117"><tspan x="1435">MOVEREPLICA</tspan><tspan x="1435" dy="20">async, one at a time</tspan></text>
+  <rect class="gate" x="1620" y="85" width="230" height="85" rx="12"/><text class="text" x="1735" y="117"><tspan x="1735">Target ACTIVE +</tspan><tspan x="1735" dy="20">source removed?</tspan></text>
+  <rect class="box" x="1325" y="255" width="220" height="85" rx="12"/><text class="text" x="1435" y="287"><tspan x="1435">Checkpoint +</tspan><tspan x="1435" dy="20">re-measure</tspan></text>
+  <polygon class="gate" points="1035,297 1140,235 1245,297 1140,359"/><text class="text" x="1140" y="286"><tspan x="1140">More replica</tspan><tspan x="1140" dy="20">moves?</tspan></text>
+  <polygon class="gate" points="690,405 810,335 930,405 810,475"/><text class="text" x="810" y="394"><tspan x="810">Leader roles</tspan><tspan x="810" dy="20">imbalanced?</tspan></text>
+  <rect class="store" x="1020" y="405" width="230" height="85" rx="12"/><text class="text" x="1135" y="437"><tspan x="1135">Set preferredLeader</tspan><tspan x="1135" dy="20">NRT/TLOG only</tspan></text>
+  <rect class="box" x="1325" y="405" width="230" height="85" rx="12"/><text class="text" x="1440" y="437"><tspan x="1440">REBALANCELEADERS</tspan><tspan x="1440" dy="20">maxAtOnce=1</tspan></text>
+  <rect class="gate" x="1630" y="405" width="220" height="85" rx="12"/><text class="text" x="1740" y="437"><tspan x="1740">Expected leaders</tspan><tspan x="1740" dy="20">actually elected?</tspan></text>
+  <rect class="gate" x="690" y="610" width="240" height="95" rx="12"/><text class="text" x="810" y="643"><tspan x="810">FINAL GATE</tspan><tspan x="810" dy="20">ranges/replicas/query/</tspan><tspan x="810" dy="20">update health</tspan></text>
+  <polygon class="gate" points="1080,658 1190,590 1300,658 1190,726"/><text class="text" x="1190" y="647"><tspan x="1190">Retain inactive</tspan><tspan x="1190" dy="20">parents?</tspan></text>
+  <rect class="store" x="1380" y="575" width="230" height="90" rx="12"/><text class="text" x="1495" y="607"><tspan x="1495">CLEANUP_PENDING</tspan><tspan x="1495" dy="20">cleanup_due_at</tspan></text>
+  <rect class="box" x="1380" y="700" width="230" height="90" rx="12"/><text class="text" x="1495" y="732"><tspan x="1495">DELETESHARD</tspan><tspan x="1495" dy="20">poll + verify absent</tspan></text>
+  <rect class="box" x="1730" y="700" width="190" height="90" rx="12"/><text class="text" x="1825" y="732"><tspan x="1825">DONE</tspan><tspan x="1825" dy="20">release + ACK</tspan></text>
+  <rect class="error" x="250" y="610" width="250" height="95" rx="12"/><text class="text" x="375" y="643"><tspan x="375">RETRY_WAIT or</tspan><tspan x="375" dy="20">MANUAL_REQUIRED</tspan><tspan x="375" dy="20">never delete parent</tspan></text>
+  <path class="edge" d="M255 205 H315"/><path class="edge" d="M540 205 H690"/>
+  <path class="edge" d="M900 160 L1020 128"/><text class="small" x="960" y="132">YES</text><path class="edge" d="M1250 128 H1325"/><path class="edge" d="M1545 128 H1620"/>
+  <path class="edge" d="M1735 170 C1710 240 1570 285 1545 297"/><path class="edge" d="M1325 297 H1245"/><path class="edge" d="M1080 350 C980 385 960 405 930 405"/><text class="small" x="1000" y="382">NO</text>
+  <path class="edge" d="M1140 235 C1150 190 1260 175 1325 145"/><text class="small" x="1200" y="190">YES</text>
+  <path class="edge" d="M760 270 V335"/><text class="small" x="735" y="310">NO</text>
+  <path class="edge" d="M930 405 H1020"/><path class="edge" d="M1250 447 H1325"/><path class="edge" d="M1555 447 H1630"/>
+  <path class="edge" d="M1740 490 C1650 570 1050 590 930 630"/><path class="edge" d="M770 475 V610"/><text class="small" x="745" y="550">NO</text>
+  <path class="edge" d="M690 658 H500"/><text class="small" x="590" y="642">FAIL</text><path class="edge" d="M930 658 H1080"/><text class="small" x="1000" y="642">PASS</text>
+  <path class="edge" d="M1300 635 H1380"/><text class="small" x="1340" y="615">YES</text><path class="edge" d="M1240 710 L1380 745"/><text class="small" x="1310" y="720">NO</text>
+  <path class="edge" d="M1610 620 C1710 650 1760 690 1790 700"/><path class="edge" d="M1610 745 H1730"/>
+  <path class="edge dash" d="M1735 170 C1520 560 650 540 500 630"/><path class="edge dash" d="M1740 490 C1500 540 650 520 500 650"/>
+  <text class="small" x="1000" y="825">An inactive parent becomes stale after new child writes; retention is forensic/manual recovery, not an automatic rollback switch.</text>
+</svg>

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2100" height="760" viewBox="0 0 2100 760">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#374151"/></marker>
+    <style>.title{font:700 24px Arial;fill:#111827}.box{fill:#e8f7e8;stroke:#1f2937;stroke-width:2}.gate{fill:#fef3c7;stroke:#92400e;stroke-width:2}.store{fill:#dbeafe;stroke:#2563eb;stroke-width:2}.text{font:14px Arial;fill:#111827;text-anchor:middle}.small{font:12px Arial;fill:#4b5563;text-anchor:middle}.edge{stroke:#374151;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke-dasharray:7 5}</style>
+  </defs>
+  <rect x="10" y="10" width="2080" height="740" rx="12" fill="#fff" stroke="#374151" stroke-width="2"/>
+  <text x="1050" y="42" class="title" text-anchor="middle">D.2 — Resharding Worker Overview</text>
+  <rect class="box" x="35" y="170" width="165" height="85" rx="12"/><text class="text" x="118" y="202"><tspan x="118">Consume</tspan><tspan x="118" dy="20">job_id</tspan></text>
+  <rect class="box" x="245" y="170" width="180" height="85" rx="12"/><text class="text" x="335" y="202"><tspan x="335">Acquire lease</tspan><tspan x="335" dy="20">deduplicate</tspan></text>
+  <rect class="box" x="470" y="170" width="190" height="85" rx="12"/><text class="text" x="565" y="202"><tspan x="565">Reconcile</tspan><tspan x="565" dy="20">DB ↔ Solr</tspan></text>
+  <rect class="box" x="705" y="170" width="190" height="85" rx="12"/><text class="text" x="800" y="202"><tspan x="800">Discover +</tspan><tspan x="800" dy="20">health nodes</tspan></text>
+  <rect class="box" x="940" y="170" width="190" height="85" rx="12"/><text class="text" x="1035" y="202"><tspan x="1035">Build</tspan><tspan x="1035" dy="20">split_plan</tspan></text>
+  <rect class="box" x="1175" y="170" width="190" height="85" rx="12"/><text class="text" x="1270" y="202"><tspan x="1270">Split loop</tspan><tspan x="1270" dy="20">submit/poll/gate</tspan></text>
+  <rect class="box" x="1410" y="170" width="200" height="85" rx="12"/><text class="text" x="1510" y="202"><tspan x="1510">Re-measure +</tspan><tspan x="1510" dy="20">placement_plan</tspan></text>
+  <polygon class="gate" points="1760,212 1870,145 1980,212 1870,279"/><text class="text" x="1870" y="200"><tspan x="1870">Data or leader</tspan><tspan x="1870" dy="19">imbalanced?</tspan></text>
+  <rect class="box" x="1430" y="385" width="210" height="85" rx="12"/><text class="text" x="1535" y="417"><tspan x="1535">MOVEREPLICA</tspan><tspan x="1535" dy="20">sequential loop</tspan></text>
+  <rect class="box" x="1710" y="385" width="210" height="85" rx="12"/><text class="text" x="1815" y="417"><tspan x="1815">preferredLeader +</tspan><tspan x="1815" dy="20">REBALANCELEADERS</tspan></text>
+  <rect class="gate" x="1190" y="570" width="200" height="85" rx="12"/><text class="text" x="1290" y="602"><tspan x="1290">Final gate</tspan><tspan x="1290" dy="20">topology + traffic</tspan></text>
+  <rect class="box" x="890" y="570" width="210" height="85" rx="12"/><text class="text" x="995" y="602"><tspan x="995">Parent cleanup</tspan><tspan x="995" dy="20">or retention</tspan></text>
+  <rect class="box" x="600" y="570" width="200" height="85" rx="12"/><text class="text" x="700" y="602"><tspan x="700">DONE</tspan><tspan x="700" dy="20">release + ACK</tspan></text>
+  <rect class="store" x="250" y="520" width="230" height="125" rx="16"/><text class="text" x="365" y="557"><tspan x="365">MongoDB</tspan><tspan x="365" dy="20">job + checkpoint</tspan><tspan x="365" dy="20">action results</tspan></text>
+  <path class="edge" d="M200 212 H245"/><path class="edge" d="M425 212 H470"/><path class="edge" d="M660 212 H705"/><path class="edge" d="M895 212 H940"/><path class="edge" d="M1130 212 H1175"/><path class="edge" d="M1365 212 H1410"/><path class="edge" d="M1610 212 H1760"/>
+  <path class="edge" d="M1810 274 L1570 385"/><text class="small" x="1685" y="332">replica placement lệch</text>
+  <path class="edge" d="M1900 274 L1830 385"/><text class="small" x="1910" y="337">leader lệch</text>
+  <path class="edge" d="M1535 470 L1360 570"/><path class="edge" d="M1815 470 L1380 590"/>
+  <path class="edge" d="M1760 235 C1600 320 1460 500 1370 570"/><text class="small" x="1530" y="495">NO → skip rebalance</text>
+  <path class="edge" d="M1190 612 H1100"/><path class="edge" d="M890 612 H800"/>
+  <path class="edge dash" d="M335 255 V520"/><path class="edge dash" d="M1270 255 C1150 410 770 450 480 560"/>
+  <text class="small" x="1050" y="710">Every Solr mutation: persist intent → submit deterministic async ID → poll → validate → checkpoint → DELETESTATUS</text>
+</svg>

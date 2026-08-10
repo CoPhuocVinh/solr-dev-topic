@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="720" viewBox="0 0 1800 720">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#374151"/>
+    </marker>
+    <style>
+      .title{font:700 24px Arial;fill:#111827}.lane{font:700 17px Arial;fill:#374151}
+      .box{fill:#e8f7e8;stroke:#1f2937;stroke-width:2;rx:12}.store{fill:#dbeafe;stroke:#2563eb;stroke-width:2}
+      .queue{fill:#ecfdf5;stroke:#22c55e;stroke-width:2}.decision{fill:#fef3c7;stroke:#92400e;stroke-width:2}
+      .text{font:15px Arial;fill:#111827;text-anchor:middle}.small{font:13px Arial;fill:#4b5563;text-anchor:middle}
+      .edge{stroke:#374151;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke-dasharray:7 5}
+    </style>
+  </defs>
+  <rect x="10" y="10" width="1780" height="700" rx="12" fill="#fff" stroke="#374151" stroke-width="2"/>
+  <text x="900" y="42" class="title" text-anchor="middle">D.1 — Detect &amp; Durable Enqueue</text>
+  <line x1="10" y1="62" x2="1790" y2="62" stroke="#9ca3af"/>
+  <text x="75" y="90" class="lane">Publisher</text><text x="75" y="535" class="lane">MongoDB / Queue</text>
+  <rect class="box" x="45" y="145" width="180" height="90"/><text class="text" x="135" y="180"><tspan x="135">Schedule</tspan><tspan x="135" dy="22">00:00 daily</tspan></text>
+  <rect class="box" x="285" y="145" width="215" height="90"/><text class="text" x="392" y="176"><tspan x="392">CLUSTERSTATUS</tspan><tspan x="392" dy="22">count ACTIVE shards</tspan></text>
+  <rect class="box" x="560" y="145" width="215" height="90"/><text class="text" x="668" y="176"><tspan x="668">Exclude active jobs</tspan><tspan x="668" dy="22">all non-terminal states</tspan></text>
+  <rect class="box" x="835" y="145" width="200" height="90"/><text class="text" x="935" y="176"><tspan x="935">Get total docs</tspan><tspan x="935" dy="22">100 topics/request</tspan></text>
+  <polygon class="decision" points="1115,190 1245,120 1375,190 1245,260"/><text class="text" x="1245" y="176"><tspan x="1245">requestedTarget</tspan><tspan x="1245" dy="20">&gt; activeShards?</tspan></text>
+  <rect class="box" x="1455" y="95" width="190" height="75"/><text class="text" x="1550" y="127"><tspan x="1550">NO → Skip</tspan><tspan x="1550" dy="20">no new job</tspan></text>
+  <rect class="box" x="1150" y="340" width="220" height="90"/><text class="text" x="1260" y="372"><tspan x="1260">Insert job NEW</tspan><tspan x="1260" dy="20">enqueue=PENDING</tspan></text>
+  <rect class="queue" x="1445" y="340" width="220" height="90" rx="12"/><text class="text" x="1555" y="372"><tspan x="1555">Publish job_id</tspan><tspan x="1555" dy="20">1 topic/message</tspan></text>
+  <rect class="store" x="1135" y="540" width="250" height="105" rx="16"/><text class="text" x="1260" y="575"><tspan x="1260">Resharding Job</tspan><tspan x="1260" dy="20">unique active collection</tspan><tspan x="1260" dy="20">outbox state</tspan></text>
+  <rect class="queue" x="1435" y="540" width="240" height="105" rx="16"/><text class="text" x="1555" y="575"><tspan x="1555">Queue</tspan><tspan x="1555" dy="20">data.resharding_</tspan><tspan x="1555" dy="20">solr_topic</tspan></text>
+  <path class="edge" d="M225 190 H285"/><path class="edge" d="M500 190 H560"/><path class="edge" d="M775 190 H835"/><path class="edge" d="M1035 190 H1115"/>
+  <path class="edge" d="M1375 190 L1455 135"/><text class="small" x="1408" y="150">NO</text>
+  <path class="edge" d="M1245 260 V340"/><text class="small" x="1270" y="305">YES</text>
+  <path class="edge" d="M1370 385 H1445"/><path class="edge dash" d="M1260 430 V540"/><path class="edge dash" d="M1555 430 V540"/>
+  <path class="edge dash" d="M1445 405 C1390 470 1380 490 1320 540"/>
+  <text class="small" x="1440" y="482">publish success → enqueue=SENT</text>
+  <text class="small" x="900" y="690">Persist before publish • duplicate-safe by job_id • inactive parent shards are never counted</text>
+</svg>

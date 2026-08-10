@@ -1,13 +1,15 @@
 <h1>
-  <strong>APACHE SOLR - SPLIT SHARD &amp; MOVE REPLICA (chọn node theo tài nguyên)</strong>
+  <strong>APACHE SOLR - RESOURCE-AWARE RESHARDING THEO WAVE 1 → 2 → 4 → 8</strong>
 </h1>
 <h1>
-  <span style="color: rgb(51,102,255);"> <strong>A. Change Log</strong> </span>
+  <span style="color: rgb(51,102,255);">
+    <strong>A. Change Log</strong>
+  </span>
 </h1>
 <table class="relative-table wrapped" style="width: 83.5294%;">
-  <colgroup class=""> <col class="" style="width: 8.54643%;"/> <col class="" style="width: 17.6215%;"/> <col class="" style="width: 15.2426%;"/> <col class="" style="width: 41.4973%;"/> <col class="" style="width: 17.0929%;"/> </colgroup>
-  <tbody class="">
-    <tr class="">
+  <colgroup> <col style="width: 8.5%;"/> <col style="width: 17.6%;"/> <col style="width: 15.2%;"/> <col style="width: 41.5%;"/> <col style="width: 17.2%;"/> </colgroup>
+  <tbody>
+    <tr>
       <th>Version</th>
       <th>Date updated</th>
       <th>Author</th>
@@ -15,1280 +17,1233 @@
       <th>Status</th>
     </tr>
     <tr>
+      <td>v2.0</td>
+      <td>10/08/2026</td>
+      <td>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
+      </td>
+      <td>Đồng bộ flow theo wave 1 → 2 → 4 → 8; RabbitMQ giữ message tới khi main job DONE, bổ sung lưu tiến độ, đối chiếu Solr, ADD/verify/DELETE và tách parent cleanup sang job riêng.</td>
+      <td>
+        <ac:structured-macro ac:macro-id="9f010001-7c3a-4c81-9000-000000000001" ac:name="status" ac:schema-version="1">
+          <ac:parameter ac:name="colour">Yellow</ac:parameter>
+          <ac:parameter ac:name="title">DRAFT</ac:parameter>
+        </ac:structured-macro>
+      </td>
+    </tr>
+    <tr>
+      <td>v1.5</td>
+      <td>30/07/2026</td>
+      <td>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
+      </td>
+      <td>Bổ sung Solr failure handling tại từng step; giữ flow tổng quan tối giản.</td>
+      <td>DRAFT</td>
+    </tr>
+    <tr>
       <td>v1.4</td>
+      <td>30/07/2026</td>
       <td>
-        <div class="content-wrapper">
-          <p>30/07/2026</p>
-        </div>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
       </td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:link>
-              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
-            </ac:link>
-          </p>
-        </div>
-      </td>
-      <td>Sắp xếp lại thứ tự mục: Why-not lên E (sau Flow); Downtime xuống L; Reference (tham số) xuống cuối N</td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:structured-macro ac:macro-id="c1d2e3f4-0042-4a00-9000-000000000042" ac:name="status" ac:schema-version="1">
-              <ac:parameter ac:name="colour">Yellow</ac:parameter>
-              <ac:parameter ac:name="title">DRAFT</ac:parameter>
-            </ac:structured-macro>
-          </p>
-        </div>
-      </td>
+      <td>Sắp xếp lại thứ tự các mục và phần tham khảo.</td>
+      <td>DRAFT</td>
     </tr>
     <tr>
       <td>v1.3</td>
+      <td>30/07/2026</td>
       <td>
-        <div class="content-wrapper">
-          <p>30/07/2026</p>
-        </div>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
       </td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:link>
-              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
-            </ac:link>
-          </p>
-        </div>
-      </td>
-      <td>Thêm mục N: vì sao Placement Plugin / Autoscaling không dùng được cho SPLITSHARD</td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:structured-macro ac:macro-id="c1d2e3f4-0041-4a00-9000-000000000041" ac:name="status" ac:schema-version="1">
-              <ac:parameter ac:name="colour">Yellow</ac:parameter>
-              <ac:parameter ac:name="title">DRAFT</ac:parameter>
-            </ac:structured-macro>
-          </p>
-        </div>
-      </td>
+      <td>Bổ sung phân tích Placement Plugin và SolrCloud Autoscaling.</td>
+      <td>DRAFT</td>
     </tr>
     <tr>
       <td>v1.2</td>
+      <td>30/07/2026</td>
       <td>
-        <div class="content-wrapper">
-          <p>30/07/2026</p>
-        </div>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
       </td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:link>
-              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
-            </ac:link>
-          </p>
-        </div>
-      </td>
-      <td>Thêm bối cảnh full flow (tái sử dụng Part 1 detect) + phân tích downtime</td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:structured-macro ac:macro-id="c1d2e3f4-0040-4a00-9000-000000000040" ac:name="status" ac:schema-version="1">
-              <ac:parameter ac:name="colour">Yellow</ac:parameter>
-              <ac:parameter ac:name="title">DRAFT</ac:parameter>
-            </ac:structured-macro>
-          </p>
-        </div>
-      </td>
+      <td>Thêm bối cảnh full flow detect, queue và downtime.</td>
+      <td>DRAFT</td>
     </tr>
     <tr>
       <td>v1.1</td>
+      <td>29/07/2026</td>
       <td>
-        <div class="content-wrapper">
-          <p>29/07/2026</p>
-        </div>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
       </td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:link>
-              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
-            </ac:link>
-          </p>
-        </div>
-      </td>
-      <td>Rút gọn, viết dễ hiểu</td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:structured-macro ac:macro-id="c1d2e3f4-0001-4a00-9000-000000000001" ac:name="status" ac:schema-version="1">
-              <ac:parameter ac:name="colour">Yellow</ac:parameter>
-              <ac:parameter ac:name="title">DRAFT</ac:parameter>
-            </ac:structured-macro>
-          </p>
-        </div>
-      </td>
+      <td>Rút gọn, viết dễ hiểu.</td>
+      <td>DRAFT</td>
     </tr>
     <tr>
       <td>v1.0</td>
+      <td>29/07/2026</td>
       <td>
-        <div class="content-wrapper">
-          <p>29/07/2026</p>
-        </div>
+        <ac:link>
+          <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
+        </ac:link>
       </td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:link>
-              <ri:user ri:userkey="2c9090828f738af7018f75e8aab40000"/>
-            </ac:link>
-          </p>
-        </div>
-      </td>
-      <td>Bản đầu: flow split shard + move replica chọn node theo tài nguyên</td>
-      <td>
-        <div class="content-wrapper">
-          <p>
-            <ac:structured-macro ac:macro-id="c1d2e3f4-0002-4a00-9000-000000000002" ac:name="status" ac:schema-version="1">
-              <ac:parameter ac:name="colour">Yellow</ac:parameter>
-              <ac:parameter ac:name="title">DRAFT</ac:parameter>
-            </ac:structured-macro>
-          </p>
-        </div>
-      </td>
+      <td>Bản đầu: flow split shard và phân tải replica theo tài nguyên.</td>
+      <td>DRAFT</td>
     </tr>
   </tbody>
 </table>
 <h1>
-  <span style="color: rgb(51,102,255);"> <strong>B. Tóm tắt</strong> </span>
+  <span style="color: rgb(51,102,255);">
+    <strong>B. Tóm tắt và quyết định thiết kế</strong>
+  </span>
 </h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0003-4a00-9000-000000000003" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Vấn đề &amp; giải pháp</ac:parameter>
+<ac:structured-macro ac:macro-id="9f010002-7c3a-4c81-9000-000000000002" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Mục tiêu</ac:parameter>
   <ac:rich-text-body>
-    <p>
-      <strong>Vấn đề:</strong> Khi split một shard, Solr đặt replica đầu tiên của mọi sub-shard <strong>lên đúng node đang giữ leader của shard cũ</strong>. Kết quả: sau split, một node ôm hết → node đó bị quá tải (hotspot).</p>
-    <p>
-      <strong>Giải pháp:</strong> Sau split, chủ động <strong>trải các sub-shard ra node khác</strong>. Chọn node dựa trên tài nguyên thật của từng node (load, heap, GC, disk).</p>
+    <p class="title conf-macro-render">Vấn đề &amp; giải pháp</p>
+    <h2>
+      <strong>Vấn đề:</strong>
+    </h2>
     <ul>
-      <li>
-        <strong>RF=1</strong> (mỗi shard 1 bản): dời hẳn replica bằng <code>MOVEREPLICA</code>.</li>
-      <li>
-        <strong>RF=2</strong> (mỗi shard 2 bản): thường chỉ cần đổi node nào làm leader (<code>REBALANCELEADERS</code>), không dời data.</li>
+      <li>Prod có khoảng<span> </span>
+        <code>10.472</code>
+        <span> </span>collection; một số collection tăng lên hàng chục triệu records (ví dụ ~40M) trong khi vẫn<span> </span>
+        <code>numShards=1</code>.</li>
+      <li>Một shard lớn dễ trở thành bottleneck cho query, indexing, recovery và vận hành SolrCloud.</li>
+      <li>Cần chia nhỏ shard hiện có<span> </span>
+        <strong>ngay trên collection đang chạy</strong>, không đổi endpoint, không tạo collection mới.</li>
+      <li>Cần phân tải các shard cùng collection qua các node khác để tránh node đó bị quá tải (hotspot).</li>
     </ul>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0004-4a00-9000-000000000004" ac:name="note" ac:schema-version="1">
+    <h2>
+      <strong>Mục tiêu</strong>
+    </h2>
+    <ul>
+      <li>Tự động phát hiện topic có total Mentions đạt ngưỡng cần chia shard, giữ nguyên endpoint và không tạo planned read/write downtime. Ảnh hưởng latency/error phải được đo ở staging/canary và client cần có retry.</li>
+      <li>Dùng <code>SPLITSHARD</code>
+        <span> </span>(Collections API built-in của Solr) để chia một shard lớn thành nhiều sub-shard nhỏ hơn mà không lên kế hoạch dừng read/write.</li>
+    </ul>
+    <h2>
+      <strong>Giải pháp tổng quan</strong>
+    </h2>
+    <ul>
+      <li>Publisher - detect job chạy định kỳ lúc <code>00:00</code>
+        <span> </span>mỗi ngày để xác định topic cần chia shard.</li>
+      <li>Tính<span> </span>
+        <code>target_shards</code>, insert job<span> </span>
+        <code>NEW</code>
+        <span> </span>vào DB, rồi push message vào queue<span> </span>
+        <code>data.resharding_solr_topic</code>.</li>
+      <li>
+        <span style="color: rgb(51,51,51);">Consumer/worker xử lý các trạng thái<span> </span>
+        </span><code>NEW/RUNNING/RETRY_WAIT/MANUAL_REQUIRED/DONE/FAILED</code>, dùng <code>SPLITSHARD</code> để chia shard.</li>
+      <li>
+        <code>SPLITSHARD</code>
+        <span> </span>chia hash range của shard gốc thành các sub-range nhỏ hơn và tạo sub-shard mới, ví dụ<span> </span>
+        <code>shard1</code>
+        <span> </span>→<span> </span>
+        <code>shard1_0</code>
+        <span> </span>+<span> </span>
+        <code>shard1_1</code>.</li>
+      <li>Trong lúc split, shard gốc tiếp tục phục vụ query/indexing; sau khi hoàn tất Solr chuyển request sang sub-shards. Đây là thiết kế không có planned downtime, không phải cam kết tuyệt đối không tăng latency hoặc lỗi tạm thời.</li>
+      <li>Shard gốc chuyển sang trạng thái<span> </span>
+        <code>inactive</code>
+        <span> </span>sau khi split. Main job lưu danh sách này, đặt <code>cleanup_status=PENDING</code>, chuyển <code>DONE</code> rồi ACK message. Việc xóa parent bằng <code>DELETESHARD</code> thuộc cleanup job/wiki riêng.</li>
+      <li>Sau split, Solr đặt replica đầu tiên của mọi sub-shard<span> </span>
+        <strong>lên đúng node đang giữ leader của shard cũ</strong>. Kết quả: sau split, một node ôm hết → node đó bị quá tải (hotspot). Chủ động<span> </span>
+        <strong>trải các sub-shard ra node khác</strong>. Chọn node dựa trên tài nguyên thật của từng node (load, heap, GC, disk).<ul>
+          <li>
+            <strong>RF=1</strong>
+            <span> </span>(mỗi shard 1 bản): tạo bản mới để Solr tự chọn node, kiểm tra bản mới rồi xóa bản ở node nguồn bằng <code>ADDREPLICA → verify → DELETEREPLICA</code>.</li>
+          <li>
+            <strong>RF=2</strong>
+            <span> </span>(mỗi shard 2 bản): thường chỉ cần đổi node nào làm leader (<code>REBALANCELEADERS</code>), không dời data.</li>
+        </ul>
+      </li>
+    </ul>
+    <ac:structured-macro ac:macro-id="9f010004-7c3a-4c81-9000-000000000004" ac:name="note" ac:schema-version="1">
+      <ac:parameter ac:name="title">Cách đọc hình D.1</ac:parameter>
       <ac:rich-text-body>
-        <p>Concept split (<code>rewrite</code> vs <code>link</code>) và 3 cách phân tải: xem tài liệu <em>SPLIT SHARD</em>. Hướng tạo collection mới + alias: xem tài liệu <em>Topic Collection Resharding</em>.</p>
+        <p>Method split shard là <span style="color: rgb(51,51,51);">rewrite<br/>Hệ thống tự phát hiện topic collection lớn và tăng số active shard ngay trên collection hiện tại. Flow không tạo collection mới, không đổi alias hoặc endpoint, không merge/downscale và không vượt quá <code>8</code> active shards.<br/>
+          </span>
+        </p>
       </ac:rich-text-body>
     </ac:structured-macro>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>C. Table Of Contents</strong> </span>
-</h1>
-<p>
-  <ac:structured-macro ac:macro-id="c1d2e3f4-0005-4a00-9000-000000000005" ac:name="toc" ac:schema-version="1"/>
-</p>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>D. Flow tổng quan</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0006-4a00-9000-000000000006" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Full flow (Part 1 + Part 2)</ac:parameter>
-  <ac:rich-text-body>
-    <h2>
-      <strong>D.1 Bối cảnh — tái sử dụng Part 1 detect</strong>
-    </h2>
-    <p>Tài liệu này chỉ là <strong>back-half (Part 2)</strong>. Phần detect + queue (Part 1) <strong>tái sử dụng nguyên</strong> từ tài liệu <em>Topic Collection Resharding</em>; chỉ thay khúc sau: bỏ template-swap, dùng <code>SPLITSHARD</code> + <code>MOVEREPLICA</code>.</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0021-4a00-9000-000000000021" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Part 1 (GIỮ NGUYÊN như wiki Topic Collection Resharding):
-  detect 00:00 -> collection vượt ngưỡng -> insert job NEW -> push queue data.resharding_solr_topic
-
-Part 2 (THAY back-half: bỏ template-swap, dùng SPLITSHARD + MOVEREPLICA):
-  tối đa 10 pod, mỗi pod 1 collection, 1 collection chỉ 1 pod
-  pod: SPLITSHARD -> gate -> MOVEREPLICA (RF=1) / REBALANCELEADERS (RF=2) -> gate cuối -> DELETESHARD]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <p>Job lock (status <code>NEW→RUNNING</code> trong Mongo) đảm bảo <strong>1 collection chỉ 1 pod</strong> xử lý. Tác động downtime của flow xem <strong>mục L</strong>.</p>
-    <h2>
-      <strong>D.2 Các bước Part 2</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0007-4a00-9000-000000000007" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[1. Lấy danh sách node          (CLUSTERSTATUS)
-2. Đo sức khỏe từng node       (gọi trực tiếp từng node)
-3. Kiểm tra trước khi split     (node leader khỏe? đủ disk?)
-4. SPLITSHARD                   (chia shard)
-5. Kiểm tra sau split           (sub-shard active? mỗi shard 1 leader?)
-6a. RF=1 -> MOVEREPLICA         (dời replica sang node khỏe)
-6b. RF=2 -> REBALANCELEADERS    (đổi leader sang node khỏe)
-7. Kiểm tra cuối                (query/index OK?)
-8. Xoá shard cũ                 (DELETESHARD, làm cuối cùng)]]></ac:plain-text-body>
-    </ac:structured-macro>
     <p>
-      <ac:image ac:align="center" ac:height="380">
-        <ri:attachment ri:filename="01-split-move-flow.png"/>
+      <br/>
+    </p>
+    <p>
+      <br/>
+    </p>
+    <p>
+      <ac:image ac:align="center" ac:height="150">
+        <ri:attachment ri:filename="overview.png"/>
       </ac:image>
     </p>
-    <p>Nguyên tắc: sau mỗi bước quan trọng đều <strong>kiểm tra (gate)</strong> rồi mới đi tiếp. Không qua gate thì dừng, không làm bừa.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Tổng documents</th>
+      <th>Target active shards</th>
+    </tr>
+    <tr>
+      <td>
+        <code>&lt; 40M</code>
+      </td>
+      <td>1</td>
+    </tr>
+    <tr>
+      <td>
+        <code>40M – &lt; 80M</code>
+      </td>
+      <td>2</td>
+    </tr>
+    <tr>
+      <td>
+        <code>80M – &lt; 160M</code>
+      </td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>
+        <code>≥ 160M</code>
+      </td>
+      <td>8</td>
+    </tr>
+    <tr>
+      <td>Đã có 8 active shards</td>
+      <td>Không split thêm</td>
+    </tr>
+  </tbody>
+</table>
+<ul>
+  <li>
+    <code>MAX_ACTIVE_SHARDS = 8</code>; chỉ hỗ trợ active shard count <code>1/2/4/8</code>.</li>
+  <li>Nếu vượt nhiều mốc, split thẳng đến target trong một wave; không chạy tuần tự <code>1→2→4</code>.</li>
+  <li>Split toàn bộ active parent trong topology snapshot ban đầu, mỗi parent tuần tự.</li>
+  <li>RF=1 dùng <code>ADDREPLICA → verify → DELETEREPLICA source</code>.</li>
+  <li>RF=2 ưu tiên kiểm tra placement rồi <code>REBALANCELEADERS</code>; chỉ ADD/DELETE khi data placement sai.</li>
+  <li>Parent <code>INACTIVE</code> được giữ lại. Main job chuyển <code>DONE</code> với <code>cleanup_status=PENDING</code>; cleanup được xử lý bởi job/wiki riêng.</li>
+  <li>Không dùng <code>FORCELEADER</code>, không tự kích hoạt lại parent và không xem parent là rollback source.</li>
+</ul>
 <h1>
-  <span style="color: rgb(51,102,255);"> <strong>E. Vì sao không dùng Placement Plugin / Autoscaling cho SPLITSHARD</strong> </span>
+  <span style="color: rgb(51,102,255);">
+    <strong>C. Table Of Contents</strong>
+  </span>
 </h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0033-4a00-9000-000000000033" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Sao không để Solr tự đặt sub-shard cho đều?</ac:parameter>
+<p>
+  <ac:structured-macro ac:macro-id="9f010003-7c3a-4c81-9000-000000000003" ac:name="toc" ac:schema-version="1"/>
+</p>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>D. Flow tổng quan</strong>
+  </span>
+</h1>
+<h2>
+  <strong>D.1 Detect Resharding Topic Layer</strong>
+</h2>
+<p>
+  <ac:image ac:align="center" ac:height="400">
+    <ri:attachment ri:filename="detect layer.png"/>
+  </ac:image>
+</p>
+<ac:structured-macro ac:macro-id="95e19d06-11d5-42cb-a8b1-a1388468842d" ac:name="note" ac:schema-version="1">
+  <ac:parameter ac:name="title">Cách đọc hình D.1</ac:parameter>
   <ac:rich-text-body>
-    <p>Câu hỏi hợp lý: sao không để Solr tự đặt sub-shard cho đều, khỏi phải <code>MOVEREPLICA</code> tay? Vì <strong>cả 2 cơ chế "tự động" của Solr đều không làm được việc này.</strong></p>
-    <h2>
-      <strong>E.1 Placement Plugin — chỉ lo bản phụ, không lo leader</strong>
-    </h2>
-    <p>Đọc source <code>SplitShardCmd</code> (Solr 9.8.1): bước "add initial replica to each sub-shard" <strong>ép node = node của parent leader</strong> (truyền <code>node</code> explicit → <strong>bỏ qua placement plugin</strong>). Chỉ bản <strong>phụ</strong> (khi RF&gt;1) mới đi qua plugin.</p>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Replica sub-shard</th>
-          <th>Placement plugin?</th>
-        </tr>
-        <tr>
-          <td>Bản đầu (leader) mỗi sub-shard</td>
-          <td>❌ <strong>Ép về node parent leader</strong></td>
-        </tr>
-        <tr>
-          <td>Bản phụ (chỉ có khi RF&gt;1)</td>
-          <td>✅ Plugin chọn node</td>
-        </tr>
-      </tbody>
-    </table>
-    <p>Hệ quả:</p>
-    <ul>
-      <li>
-        <strong>RF=1:</strong> chỉ có 1 bản = bản đầu bị ép → plugin <strong>không có gì để đặt</strong> → vô dụng → phải <code>MOVEREPLICA</code>.</li>
-      <li>
-        <strong>RF=2:</strong> bản phụ được plugin trải, nhưng <strong>leader vẫn dồn node cũ</strong> → không giải quyết hotspot leader → phải <code>REBALANCELEADERS</code>.</li>
-    </ul>
-    <p>
-      <strong>Bản chất:</strong> placement plugin là quyết định "đặt ở đâu <strong>lúc TẠO</strong>", không phải "dời bản <strong>đã có</strong>". Nó <strong>không rebalance sau split được</strong>.</p>
-    <h2>
-      <strong>E.2 SolrCloud Autoscaling — Solr 9 không còn</strong>
-    </h2>
-    <ul>
-      <li>Autoscaling framework (triggers <code>nodeAdded</code>/<code>nodeLost</code>/<code>indexSize</code>, policy, <code>autoAddReplicas</code>, <code>UTILIZENODE</code>, computeplan tự rebalance) đã <strong>bị GỠ ở Solr 9.0</strong>.</li>
-      <li>Solr 9 thay bằng <strong>Placement Plugin</strong> (chỉ lúc tạo — giới hạn ở E.1). Riêng phần <strong>trigger phản ứng</strong> (tự động làm gì đó sau sự kiện) thì bị gỡ và <strong>KHÔNG được thay thế</strong>.</li>
-      <li>→ Trong 9.8.1 <strong>không có</strong> cơ chế "sau split tự động dời replica khỏi hotspot".</li>
-    </ul>
-    <h2>
-      <strong>E.3 Kết luận</strong>
-    </h2>
-    <p>Cả 2 đều <strong>không dời được replica đã tồn tại</strong> sau split. Vì vậy phải tự làm: <code>MOVEREPLICA</code> (RF=1) + <code>REBALANCELEADERS</code> (RF=2). Đó chính là <strong>lý do tồn tại của flow này</strong> (mục I và J).</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0034-4a00-9000-000000000034" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[SPLITSHARD đặt leader sub-shard -> node parent leader (ép, bỏ qua plugin)
-Placement Plugin -> chỉ chọn node cho BẢN PHỤ lúc tạo, không dời bản đã có
-Autoscaling      -> đã gỡ ở Solr 9.0, không có trigger tự rebalance
-=> Không cơ chế built-in nào trải sub-shard sau split
-=> PHẢI tự MOVEREPLICA (RF=1) + REBALANCELEADERS (RF=2)]]></ac:plain-text-body>
-    </ac:structured-macro>
+    <p>Hình mô tả thành phần high-level. Thứ tự triển khai bắt buộc là <strong>insert Mongo job trước, publish queue sau</strong>. Box “Push to Queue” đứng trước “Insert New Status to DB” trong hình không phải thứ tự transaction.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>F. Đo sức khỏe node</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0008-4a00-9000-000000000008" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">2 lưu ý quan trọng khi đo</ac:parameter>
-  <ac:rich-text-body>
-    <h2>
-      <strong>F.1 Đo trực tiếp từng node, đừng qua VIP</strong>
-    </h2>
-    <p>Gọi <code>/admin/info/system</code> qua VIP chỉ trả về <strong>một node ngẫu nhiên</strong> do load balancer chọn → không biết đang đo node nào.</p>
-    <p>Cách đúng: lấy danh sách node từ <code>CLUSTERSTATUS</code>, rồi gọi thẳng vào <code>base_url</code> của từng node:</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0009-4a00-9000-000000000009" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[GET <node.base_url>/admin/info/system?wt=json
-GET <node.base_url>/admin/metrics?group=node,jvm&wt=json
+<ol>
+  <li>
+    <strong>Lịch chạy:</strong> detector chạy lúc <code>00:00</code> hằng ngày theo timezone <code>Asia/Ho_Chi_Minh</code>.</li>
+  <li>
+    <strong>Đọc trạng thái:</strong> gọi <code>CLUSTERSTATUS</code>; chỉ đếm shard có <code>state=ACTIVE</code>, không dùng tổng số key trong <code>shards</code>.</li>
+  <li>
+    <strong>Kiểm tra cấu trúc shard:</strong> collection phải GREEN, router <code>compositeId</code>, không có shard CONSTRUCTION/RECOVERY, cấu trúc dở dang hoặc parent INACTIVE chưa cleanup.</li>
+  <li>
+    <strong>Loại trùng:</strong> không tạo wave mới nếu collection có job <code>NEW/RUNNING/RETRY_WAIT/MANUAL_REQUIRED</code>, có <code>cleanup_status != DONE</code> hoặc còn parent INACTIVE.</li>
+  <li>
+    <strong>Đếm dữ liệu:</strong> lấy tổng documents/mentions theo batch hiện tại để tìm collection cần split.</li>
+  <li>
+    <strong>Tính số shard đích:</strong> áp dụng đúng bảng threshold; không giảm shard và tối đa 8.</li>
+  <li>
+    <strong>Lưu trường hợp không hợp lệ:</strong> tạo job <code>MANUAL_REQUIRED</code> kèm ảnh chụp cấu trúc shard và mã lỗi, nhưng không publish queue.</li>
+  <li>
+    <strong>Lưu job trước:</strong> insert job <code>NEW</code> với <code>enqueue_status=PENDING</code>.</li>
+  <li>
+    <strong>Gửi message:</strong> publisher worker lấy job PENDING và chờ tăng dần giữa các lần thử cho tới khi gửi được; sau đó đặt <code>SENT</code>.</li>
+</ol>
+<ac:structured-macro ac:macro-id="9f010005-7c3a-4c81-9000-000000000005" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">python</ac:parameter>
+  <ac:plain-text-body><![CDATA[def calculate_target_shards(total_docs: int) -> int:
+    if total_docs < 40_000_000:
+        return 1
+    if total_docs < 80_000_000:
+        return 2
+    if total_docs < 160_000_000:
+        return 4
+    return 8
 
-# Kiểm tra field "node" trong response phải trùng node đang đo.
-# Node nào không gọi được -> đánh dấu bỏ, không chọn.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>F.2 Đừng tin "free RAM"</strong>
-    </h2>
-    <p>Field <code>freePhysicalMemorySize</code> là RAM trống thật sự (MemFree). Nhưng Solr <strong>để phần lớn RAM làm page cache</strong> cho index (điều này tốt), nên node khỏe vẫn báo free rất thấp.</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-000a-4a00-9000-00000000000a" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Node staging3 thật: RAM 67GB, nhưng free chỉ 1GB (1.55%).
-Trong khi heap chỉ dùng 2.5%, load 0.3 -> node HOÀN TOÀN KHỎE.
-=> Nếu lọc "free RAM < 10% thì loại" thì loại nhầm cả 3 node staging -> kẹt.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <p>
-      <strong>Thay bằng 2 chỉ số thật sự phản ánh memory:</strong>
-    </p>
-    <ul>
-      <li>
-        <strong>heapLiveSet</strong> = heap còn dùng sau khi dọn rác (GC) / heap max. Lấy <strong>min</strong> của vài lần đo (vì heap lên xuống liên tục). Vượt <code>0.80</code> → loại.</li>
-      <li>
-        <strong>gcRatio</strong> = % thời gian JVM dành cho dọn rác. Vượt <code>0.15</code> (15%) → node đang ngộp memory → loại.</li>
-    </ul>
-    <p>Lý do 2 chỉ số này đúng: node khỏe và node ngộp <strong>đều</strong> báo free RAM ~1.5% (không phân biệt được), nhưng node ngộp thì heap cao sát max và GC chạy liên tục — 2 chỉ số này tách bạch rõ.</p>
-    <h2>
-      <strong>F.3 Các chỉ số cần lấy</strong>
-    </h2>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Chỉ số</th>
-          <th>Lấy từ đâu</th>
-          <th>Nghĩa</th>
-        </tr>
-        <tr>
-          <td>load / số core</td>
-          <td>
-            <code>info/system</code>: <code>systemLoadAverage</code>, <code>availableProcessors</code>
-          </td>
-          <td>CPU bận</td>
-        </tr>
-        <tr>
-          <td>heapLiveSet</td>
-          <td>
-            <code>metrics?group=jvm</code>: <code>memory.heap.used/max</code>
-          </td>
-          <td>heap còn trống</td>
-        </tr>
-        <tr>
-          <td>gcRatio</td>
-          <td>
-            <code>metrics?group=jvm</code>: <code>gc.*.time</code>
-          </td>
-          <td>mức ngộp memory</td>
-        </tr>
-        <tr>
-          <td>disk trống</td>
-          <td>
-            <code>metrics?group=node</code>: <code>CONTAINER.fs.usableSpace/totalSpace</code> (bytes)</td>
-          <td>còn chỗ chứa index</td>
-        </tr>
-        <tr>
-          <td>size index của replica</td>
-          <td>
-            <code>metrics?group=core</code>: <code>INDEX.sizeInBytes</code>
-          </td>
-          <td>để tính disk khi move</td>
-        </tr>
-      </tbody>
-    </table>
-    <p>Đo <strong>5 lần, cách nhau 15 giây</strong>, lấy giá trị median. Split có thể chạy lâu nên trước khi move phải đo lại (số cũ hết đúng).</p>
-  </ac:rich-text-body>
+active_shards = [s for s in collection.shards if s.state == "ACTIVE"]
+current = len(active_shards)
+target = max(current, calculate_target_shards(total_docs))
+
+candidate = (
+    current in {1, 2, 4, 8}
+    and target in {1, 2, 4, 8}
+    and target > current
+    and target % current == 0
+    and (target // current) in {2, 4, 8}
+)]]></ac:plain-text-body>
 </ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>G. Chọn node khỏe</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-000b-4a00-9000-00000000000b" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Loại node xấu, rồi chấm điểm node còn lại</ac:parameter>
-  <ac:rich-text-body>
-    <h2>
-      <strong>G.1 Loại node xấu (hard filter)</strong>
-    </h2>
-    <p>Bỏ node nếu dính bất kỳ điều nào:</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-000c-4a00-9000-00000000000c" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[- node chết / không gọi được
-- load / core          > 0.70
-- heapLiveSet          > 0.80
-- gcRatio              > 0.15
-- disk trống           < 20%
-- đang recovery
-- vừa restart < 30 phút
-- có lỗi admin tăng trong lúc đo]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>G.2 Chấm điểm node còn lại (điểm thấp = khỏe hơn)</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-000d-4a00-9000-00000000000d" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[stressScore = 0.30*load + 0.25*gc + 0.20*heap + 0.20*disk + 0.05*core]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>G.3 Ví dụ: lọc "free RAM" sai, lọc mới đúng</strong>
-    </h2>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Node</th>
-          <th>free RAM</th>
-          <th>heapLiveSet</th>
-          <th>gcRatio</th>
-          <th>Kết luận</th>
-        </tr>
-        <tr>
-          <td>staging1</td>
-          <td>1.5%</td>
-          <td>0.25</td>
-          <td>0.02</td>
-          <td>khỏe</td>
-        </tr>
-        <tr>
-          <td>staging2</td>
-          <td>1.3%</td>
-          <td>0.23</td>
-          <td>0.015</td>
-          <td>khỏe</td>
-        </tr>
-        <tr>
-          <td>staging3</td>
-          <td>1.55%</td>
-          <td>0.025</td>
-          <td>0.005</td>
-          <td>khỏe</td>
-        </tr>
-        <tr>
-          <td>
-            <strong>staging-bad</strong>
-          </td>
-          <td>1.4%</td>
-          <td>
-            <strong>0.93</strong>
-          </td>
-          <td>
-            <strong>0.20</strong>
-          </td>
-          <td>
-            <strong>ngộp memory</strong>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-000e-4a00-9000-00000000000e" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Lọc kiểu cũ "free RAM < 10%":  cả 4 node đều ~1.5% -> LOẠI HẾT (sai).
-Lọc kiểu mới:
-   staging1/2/3 -> heapLiveSet<0.80 & gcRatio<0.15 -> GIỮ.
-   staging-bad  -> heapLiveSet 0.93, gcRatio 0.20  -> LOẠI (đúng).
-
-=> free RAM ~1.5% ở CẢ node khỏe lẫn node ngộp -> vô dụng.
-   heapLiveSet + gcRatio mới phân biệt được.]]></ac:plain-text-body>
-    </ac:structured-macro>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>H. Split shard</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-000f-4a00-9000-00000000000f" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Kiểm tra -> split -> kiểm tra lại</ac:parameter>
-  <ac:rich-text-body>
-    <h2>
-      <strong>H.1 Kiểm tra trước khi split</strong>
-    </h2>
-    <ul>
-      <li>Split chạy trên node đang giữ leader → <strong>node đó phải khỏe</strong> (qua filter mục G). Không khỏe thì dừng.</li>
-      <li>
-        <strong>Đủ disk:</strong> node leader phải còn trống <code>≥ 2.5 × size index</code> (vì <code>rewrite</code> ghi lại index mới, cần hơn 2x).</li>
-      <li>Shard đang <code>active</code>, không có shard con thừa, không đang recovery.</li>
-    </ul>
-    <h2>
-      <strong>H.2 Gọi SPLITSHARD</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0010-4a00-9000-000000000010" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=SPLITSHARD
-      &collection=topic_100001
-      &shard=shard1
-      &splitMethod=rewrite
-      &waitForFinalState=true
-      &async=split-topic_100001
-
-# rewrite: sub-shard gọn -> move nhẹ về sau.
-# id dạng UUID -> hash chia đều -> KHÔNG cần splitByPrefix.
-# Poll REQUESTSTATUS đến khi completed.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>H.3 Kiểm tra sau split (bắt buộc)</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0011-4a00-9000-000000000011" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[[ ] shard cũ chuyển INACTIVE
-[ ] có đủ shard con (shard1_0, shard1_1)
-[ ] tất cả shard con + replica ACTIVE
-[ ] mỗi shard con có đúng 1 leader
-[ ] query thử vài doc -> OK
-
-Chưa qua hết -> KHÔNG move / đổi leader.]]></ac:plain-text-body>
-    </ac:structured-macro>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>I. RF=1: Move replica</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0012-4a00-9000-000000000012" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Dời replica sang node khỏe</ac:parameter>
-  <ac:rich-text-body>
-    <p>RF=1 chỉ có 1 bản mỗi shard, dồn hết trên node leader cũ. Dùng <code>MOVEREPLICA</code> để dời sang node khác. Move là <strong>copy data thật</strong>, nên phải chắc node đích <strong>đủ disk sau khi copy xong</strong>.</p>
-    <h2>
-      <strong>I.1 Cách chọn node đích</strong>
-    </h2>
-    <p>Node đích phải: khỏe (mục G) + chưa chứa replica của shard đó + <strong>đủ disk sau copy</strong>:</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0013-4a00-9000-000000000013" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[cần    = size_replica * 1.25            # +25% dự phòng lúc recovery
-còn lại = disk_trống - cần
-điều kiện: còn lại / disk_tổng >= 20%   # không đủ -> loại
-
-Trong các node đạt, chọn theo thứ tự:
-  1. node ít replica của collection này nhất   (rải đều)
-  2. stressScore thấp nhất                      (khỏe nhất)
-  3. tên node                                   (cho ổn định)]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>I.2 Move từng cái một, đo lại mỗi lần</strong>
-    </h2>
-    <p>Move <strong>tuần tự</strong>, và <strong>đo lại tài nguyên trước mỗi lần move</strong> — vì lần move trước vừa làm node đích tốn disk + tăng tải.</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0014-4a00-9000-000000000014" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[GET /solr/admin/collections?action=MOVEREPLICA
-      &collection=topic_100001
-      &replica=core_node5
-      &targetNode=solr9-staging2.ynm.local:8985_solr
-      &waitForFinalState=true
-
-# Move xong: đợi replica mới ACTIVE, kiểm tra doc count khớp, rồi mới move cái tiếp.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>I.3 Ví dụ: dời 2 replica ra khỏi hotspot</strong>
-    </h2>
-    <p>Split xong: <code>shard1</code> (36GB) → <code>shard1_0</code> (18GB) + <code>shard1_1</code> (18GB). Cả 2 đang nằm trên <strong>staging3</strong>. Mỗi replica 18GB → cần <code>18 × 1.25 = 22.5GB</code>. Mỗi node disk tổng 500GB.</p>
-    <p>
-      <strong>Move #1 — dời shard1_0:</strong>
-    </p>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Node</th>
-          <th>disk trống</th>
-          <th>còn lại sau copy</th>
-          <th>stress</th>
-          <th>chọn?</th>
-        </tr>
-        <tr>
-          <td>staging1</td>
-          <td>200GB</td>
-          <td>35.5% (OK)</td>
-          <td>0.28</td>
-          <td></td>
-        </tr>
-        <tr>
-          <td>staging2</td>
-          <td>180GB</td>
-          <td>31.5% (OK)</td>
-          <td>
-            <strong>0.24</strong>
-          </td>
-          <td>
-            <strong>✔ (stress thấp hơn)</strong>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-    <p>
-      <strong>Move #2 — dời shard1_1 (đo lại):</strong> staging2 vừa nhận 18GB nên stress tăng lên 0.33 và đã có 1 replica.</p>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Node</th>
-          <th>disk trống</th>
-          <th>còn lại sau copy</th>
-          <th>stress</th>
-          <th>số replica</th>
-          <th>chọn?</th>
-        </tr>
-        <tr>
-          <td>staging1</td>
-          <td>200GB</td>
-          <td>35.5% (OK)</td>
-          <td>0.28</td>
-          <td>
-            <strong>0</strong>
-          </td>
-          <td>
-            <strong>✔ (ít replica hơn)</strong>
-          </td>
-        </tr>
-        <tr>
-          <td>staging2</td>
-          <td>160GB</td>
-          <td>27.5% (OK)</td>
-          <td>0.33</td>
-          <td>1</td>
-          <td></td>
-        </tr>
-      </tbody>
-    </table>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0015-4a00-9000-000000000015" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Kết quả: shard1_0 -> staging2, shard1_1 -> staging1. staging3 hết ôm 2 shard.
-
-Bài học: nếu KHÔNG đo lại giữa 2 lần move, move #2 vẫn tưởng staging2 khỏe nhất
-(số cũ) -> dồn cả 2 lên staging2. Nhờ đo lại + đếm số replica mới rải đều được.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0016-4a00-9000-000000000016" ac:name="note" ac:schema-version="1">
-      <ac:rich-text-body>
-        <p>Nếu node stress thấp nhất nhưng <strong>không đủ disk sau copy</strong> thì vẫn loại. Disk luôn được ưu tiên hơn stress — node nhẹ mà không đủ chỗ chứa thì vô dụng.</p>
-      </ac:rich-text-body>
-    </ac:structured-macro>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>J. RF=2: Đổi leader</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0017-4a00-9000-000000000017" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Đã có 2 bản trên 2 node -> thường chỉ đổi leader</ac:parameter>
-  <ac:rich-text-body>
-    <p>RF=2 đã có sẵn replica trên nhiều node. 2 cách, chọn 1:</p>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Cách</th>
-          <th>Làm gì</th>
-          <th>Copy data?</th>
-          <th>Khi nào</th>
-        </tr>
-        <tr>
-          <td>(a) Đổi leader</td>
-          <td>
-            <code>REBALANCELEADERS</code>
-          </td>
-          <td>Không</td>
-          <td>Replica đã trải đều, chỉ cần chia lại vai trò leader. Nhẹ.</td>
-        </tr>
-        <tr>
-          <td>(b) Dời replica</td>
-          <td>
-            <code>MOVEREPLICA</code> (như mục I)</td>
-          <td>Có</td>
-          <td>Replica bị dồn node, cần trải lại data. Nặng.</td>
-        </tr>
-      </tbody>
-    </table>
-    <h2>
-      <strong>J.1 Cách (a) — đổi leader</strong>
-    </h2>
-    <p>Chỉ đổi <strong>node nào làm leader</strong>, không dời data. Chọn leader là replica <code>ACTIVE</code>, loại <code>PULL</code>, chia leader đều các node khỏe.</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0018-4a00-9000-000000000018" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[# 1. đánh dấu replica muốn làm leader (cho từng shard con):
-ADDREPLICAPROP ...&shard=<child>&replica=<replica>&property=preferredLeader&property.value=true
-
-# 2. bảo Solr cân lại leader:
-REBALANCELEADERS ...&collection=topic_100001&maxAtOnce=1&maxWaitSeconds=120
-
-Ví dụ 4 shard con, 3 node -> chia leader 2/1/1.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0019-4a00-9000-000000000019" ac:name="warning" ac:schema-version="1">
-      <ac:rich-text-body>
-        <p>
-          <strong>REBALANCELEADERS không chắc ăn 100%.</strong> Đã có report nó báo thành công nhưng leader không đổi. Nên:</p>
-        <ul>
-          <li>Sau khi gọi phải <strong>kiểm tra lại leader có thật sự đổi chưa</strong> (ở gate cuối).</li>
-          <li>Nó tác động <strong>cả collection</strong> → trước khi gọi kiểm tra không có shard khác đang chờ đổi leader.</li>
-          <li>
-            <strong>Không dùng <code>FORCELEADER</code>.</strong> Nếu mãi không đổi: restart replica đang làm leader để ép bầu lại (replica đánh dấu preferredLeader sẽ được ưu tiên) — ghi vào runbook.</li>
-        </ul>
-      </ac:rich-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>J.2 Cách (b) — dời replica</strong>
-    </h2>
-    <p>Dùng <code>MOVEREPLICA</code> với cách chọn node y hệt mục I. Dùng khi replica thật sự bị dồn, cần trải lại data chứ không chỉ đổi leader.</p>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>K. Rollback &amp; lỗi</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-001a-4a00-9000-00000000001a" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Giữ shard cũ để lỡ có gì còn quay lại</ac:parameter>
-  <ac:rich-text-body>
-    <h2>
-      <strong>K.1 Rollback: giữ shard cũ (xoá sau cùng)</strong>
-    </h2>
-    <p>Sau split, shard cũ chuyển <code>inactive</code> nhưng <strong>data vẫn còn trên disk</strong> (Solr không tự xoá). Với <code>rewrite</code>, index shard cũ không bị đụng → nó là <strong>bản snapshot tại thời điểm split</strong>.</p>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-001b-4a00-9000-00000000001b" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[- ĐỪNG xoá shard cũ ngay. Giữ lại tới khi mọi thứ verify xong (delete-last).
-- Có sự cố -> quay lại shard cũ (mốc lúc split).
-- Đánh đổi: mọi write SAU split nằm ở shard con, quay lại shard cũ sẽ mất -> chấp nhận.
-- Xong xuôi mới DELETESHARD shard cũ để lấy lại disk.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <p>Lưu ý: giữ shard cũ = tốn ~2x disk trong thời gian đó → chốt "giữ bao lâu" rồi mới xoá.</p>
-    <h2>
-      <strong>K.2 Bảng xử lý lỗi nhanh</strong>
-    </h2>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Tình huống</th>
-          <th>Làm gì</th>
-        </tr>
-        <tr>
-          <td>Split xong nhưng shard con thiếu / không active</td>
-          <td>Dừng, không balance; cleanup có kiểm soát; không tự bật lại shard cũ</td>
-        </tr>
-        <tr>
-          <td>Move: replica mới chưa active</td>
-          <td>Giữ bản cũ, chờ; <strong>chưa</strong> xoá bản cũ</td>
-        </tr>
-        <tr>
-          <td>Move: bản cũ mất mà bản mới không active</td>
-          <td>Sự cố nghiêm trọng → xử lý tay ngay</td>
-        </tr>
-        <tr>
-          <td>Đổi leader: gọi xong leader không đổi</td>
-          <td>Kiểm tra lại; retry; không FORCELEADER; cùng lắm restart leader cũ</td>
-        </tr>
-      </tbody>
-    </table>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>L. Downtime</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-0030-4a00-9000-000000000030" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Read 0 downtime; write chỉ chớp sub-giây lúc đổi leader</ac:parameter>
-  <ac:rich-text-body>
-    <p>
-      <strong>Trả lời ngắn:</strong> flow này <strong>gần như không downtime</strong>. Read liền mạch tuyệt đối mọi bước. Write chỉ "chớp" sub-giây trên đúng shard đang đổi leader, retry được. Không có cutover 2–3s như template-swap.</p>
-    <h2>
-      <strong>L.1 Map downtime từng bước</strong>
-    </h2>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Bước</th>
-          <th>Read</th>
-          <th>Write</th>
-          <th>Ghi chú</th>
-        </tr>
-        <tr>
-          <td>Part 1: detect → queue → insert job NEW</td>
-          <td>✅ 0</td>
-          <td>✅ 0</td>
-          <td>Chỉ đọc Solr + ghi Mongo, không đụng collection</td>
-        </tr>
-        <tr>
-          <td>Consume msg + lock job + set RUNNING</td>
-          <td>✅ 0</td>
-          <td>✅ 0</td>
-          <td>Chỉ Mongo</td>
-        </tr>
-        <tr>
-          <td>
-            <strong>SPLITSHARD</strong>
-          </td>
-          <td>✅ 0</td>
-          <td>✅ 0</td>
-          <td>Parent shard vẫn phục vụ read+write suốt; write được buffer sang sub-shard; switchover parent→inactive atomic</td>
-        </tr>
-        <tr>
-          <td>SPLIT GATE (verify)</td>
-          <td>✅ 0</td>
-          <td>✅ 0</td>
-          <td>Chỉ đọc state</td>
-        </tr>
-        <tr>
-          <td>
-            <strong>RF=1 MOVEREPLICA</strong>
-          </td>
-          <td>✅ 0</td>
-          <td>⚠️ chớp</td>
-          <td>Blip sub-giây/sub-shard đúng lúc xoá leader cũ → bầu lại</td>
-        </tr>
-        <tr>
-          <td>
-            <strong>RF=2 REBALANCELEADERS</strong>
-          </td>
-          <td>✅ 0</td>
-          <td>⚠️ chớp</td>
-          <td>Blip sub-giây/sub-shard lúc bàn giao leader</td>
-        </tr>
-        <tr>
-          <td>FINAL GATE (verify)</td>
-          <td>✅ 0</td>
-          <td>✅ 0</td>
-          <td>Chỉ đọc</td>
-        </tr>
-        <tr>
-          <td>DELETESHARD parent</td>
-          <td>✅ 0</td>
-          <td>✅ 0</td>
-          <td>Parent đã <code>inactive</code> (không phục vụ) → xoá = giải phóng disk</td>
-        </tr>
-      </tbody>
-    </table>
-    <h2>
-      <strong>L.2 Ba điểm cần nhớ</strong>
-    </h2>
-    <ol>
-      <li>
-        <strong>Blip KHÔNG đến từ SPLITSHARD.</strong> Split zero downtime vì parent leader giữ vai tới lúc inactive, còn sub-shard leader (bản initial trên node cũ) đã active sẵn khi switch → write chỉ buffer, không rớt. Cái chớp <strong>chỉ đến từ bước rebalance sau split</strong> (MOVEREPLICA/REBALANCELEADERS). Tức là nếu không trải tải (chấp nhận hotspot) → <strong>downtime = 0 tuyệt đối</strong>. Blip chính là <strong>cái giá của việc phân tải</strong>.</li>
-      <li>
-        <strong>Blip cực nhỏ và bị khoanh vùng:</strong> chỉ WRITE (read liền mạch), chỉ đúng <strong>sub-shard đang đổi leader</strong> (1/N lượng write), chỉ ~sub-giây lúc bầu/bàn giao leader, và <strong>app có retry thì gần như không thấy</strong>.</li>
-      <li>
-        <strong>10 pod KHÔNG cộng dồn downtime.</strong> Mỗi collection 1 endpoint riêng → blip của collection X không đụng Y → 10 pod = 10 blip nhỏ độc lập, không thành 1 downtime to. Nhưng <strong>degrade latency thì CÓ cộng dồn</strong> (10 rewrite + 10 recovery = bão IO/CPU chung cluster). → Khi scale pod, thứ phải sợ là <strong>latency</strong>, không phải downtime.</li>
-    </ol>
-    <h2>
-      <strong>L.3 So với template-swap</strong>
-    </h2>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Tiêu chí</th>
-          <th>Template-swap</th>
-          <th>Split + Move (flow này)</th>
-        </tr>
-        <tr>
-          <td>Read downtime</td>
-          <td>~2–3s cả endpoint</td>
-          <td>
-            <strong>0</strong>
-          </td>
-        </tr>
-        <tr>
-          <td>Write downtime</td>
-          <td>~2–3s cả endpoint</td>
-          <td>Chớp sub-giây/shard, retry được</td>
-        </tr>
-        <tr>
-          <td>Nguồn downtime</td>
-          <td>Cutover alias (bắt buộc)</td>
-          <td>Chỉ từ rebalance (tuỳ chọn)</td>
-        </tr>
-        <tr>
-          <td>Endpoint</td>
-          <td>Có lúc alias tạm</td>
-          <td>Không đổi tên, không alias</td>
-        </tr>
-        <tr>
-          <td>10 pod</td>
-          <td>Mỗi collection 1 cutover 2–3s</td>
-          <td>Blip độc lập, không cộng dồn</td>
-        </tr>
-      </tbody>
-    </table>
-    <h2>
-      <strong>L.4 Downtime budget 1 collection</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0031-4a00-9000-000000000031" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Read downtime : 0 tuyệt đối, mọi bước.
-Write "mất"   : ~ (số sub-shard) x sub-giây, rải rác, mỗi lần chỉ 1 shard,
-                retry được -> thực tế ~ 0.
-Không có cutover 2-3s như template-swap. Không đổi endpoint.
-Đổi lại: latency TĂNG lúc split/move (không downtime) -> chạy off-peak.]]></ac:plain-text-body>
-    </ac:structured-macro>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0032-4a00-9000-000000000032" ac:name="note" ac:schema-version="1">
-      <ac:rich-text-body>
-        <p>2 thứ nên làm dù không có downtime: <strong>chạy off-peak</strong> (split rewrite + recovery làm tăng latency), và <strong>khuyến nghị app retry</strong> (app không retry có thể ăn 1–2 update fail đúng lúc "chớp" đổi leader).</p>
-      </ac:rich-text-body>
-    </ac:structured-macro>
-  </ac:rich-text-body>
-</ac:structured-macro>
-<h1>
-  <span style="color: rgb(51,102,255);"> <strong>M. Checklist</strong> </span>
-</h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-001c-4a00-9000-00000000001c" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Trước khi làm production, tự hỏi</ac:parameter>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Current</th>
+      <th>Total docs</th>
+      <th>Target</th>
+      <th>
+        <code>numSubShards</code>/parent</th>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>45M</td>
+      <td>2</td>
+      <td>2</td>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>100M</td>
+      <td>4</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>170M</td>
+      <td>8</td>
+      <td>8</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>90M</td>
+      <td>4</td>
+      <td>2</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>180M</td>
+      <td>8</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>170M</td>
+      <td>8</td>
+      <td>2</td>
+    </tr>
+  </tbody>
+</table>
+<h2>
+  <strong>D.2 Resharding Solr Topic Layer</strong>
+</h2>
+<p>
+  <ac:image ac:align="center" ac:height="400">
+    <ri:attachment ri:filename="resharding layer.png"/>
+  </ac:image>
+</p>
+<ac:structured-macro ac:macro-id="9f010006-7c3a-4c81-9000-000000000006" ac:name="note" ac:schema-version="1">
+  <ac:parameter ac:name="title">Cách đọc hình D.2</ac:parameter>
   <ac:rich-text-body>
     <ul>
-      <li>Đã đo trực tiếp từng node (không qua VIP) chưa?</li>
-      <li>Đã bỏ "free RAM" và dùng heapLiveSet + gcRatio chưa?</li>
-      <li>Node leader có khỏe + đủ disk (≥ 2.5× index) trước khi split chưa?</li>
-      <li>Đã qua gate sau split (shard con active, mỗi shard 1 leader) chưa?</li>
-      <li>RF=1: move tuần tự + đo lại mỗi lần + check disk sau copy chưa?</li>
-      <li>RF=2: chọn (a) đổi leader hay (b) dời replica — rõ chưa?</li>
-      <li>Đổi leader xong đã verify leader thật sự đổi chưa?</li>
-      <li>Giữ shard cũ bao lâu rồi mới xoá?</li>
-      <li>Có đảm bảo chỉ 1 workflow chạy trên 1 collection cùng lúc không?</li>
+      <li>“Acquire Job Lock / Set RUNNING” chỉ có nghĩa là đọc job từ Mongo, kiểm tra trạng thái rồi đặt <code>RUNNING</code>; đây không phải distributed lock.</li>
+      <li>“Move Replica Action” là composite flow <code>ADDREPLICA → verify → DELETEREPLICA source</code>, không phải Collections API <code>MOVEREPLICA</code>.</li>
+      <li>Box “Delete Shard (Option)” không còn thuộc main message. Flow thật kiểm tra lần cuối, đặt main job <code>DONE</code> với <code>cleanup_status=PENDING</code> rồi ACK; parent cleanup thuộc job/wiki riêng.</li>
+      <li>Mongo checkpoint trong hình có nghĩa là lưu việc sắp làm và kết quả trước/sau từng Solr action để lần nhận lại message có thể tiếp tục.</li>
     </ul>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-001d-4a00-9000-00000000001d" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[Nhớ nhanh:
-  - Đo node: trực tiếp, không VIP. Không tin free RAM -> dùng heap + GC.
-  - Split: node leader khỏe + đủ 2.5x disk.
-  - Move (RF=1): đủ disk sau copy + node khỏe nhất, làm tuần tự, đo lại mỗi lần.
-  - Đổi leader (RF=2): REBALANCELEADERS, nhớ verify lại, không FORCELEADER.
-  - Rollback: giữ shard cũ, xoá sau cùng.]]></ac:plain-text-body>
-    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<ac:structured-macro ac:macro-id="9f010007-7c3a-4c81-9000-000000000007" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[Nhận và kiểm tra message
+→ đọc Mongo job; nếu đã DONE thì ACK và bỏ qua
+→ đặt RUNNING; đối chiếu Mongo với CLUSTERSTATUS / REQUESTSTATUS
+→ đếm lại docs, kiểm tra shard/node/disk và lập kế hoạch split
+→ split tuần tự từng parent ACTIVE ban đầu; lưu tiến độ từng action
+→ RF=1: ADD → kiểm tra → DELETE source
+   RF=2: kiểm tra vị trí → ADD/DELETE nếu cần → REBALANCELEADERS
+→ kiểm tra kết quả cuối
+→ Mongo: status=DONE, cleanup_status=PENDING, lưu inactive_parents
+→ ACK Rabbit message
+
+Parent cleanup chạy bằng job/wiki riêng, không giữ main message.]]></ac:plain-text-body>
+</ac:structured-macro>
+<h3>
+  <strong>D.2.1 Các từ dùng trong flow có nghĩa gì?</strong>
+</h3>
+<table class="wrapped">
+  <tbody>
+    <tr><th>Từ kỹ thuật</th><th>Hiểu đơn giản</th></tr>
+    <tr><td><code>ACK / unacked message</code></td><td>ACK là báo Rabbit xử lý xong; unacked là message vẫn đang được worker giữ và Rabbit chưa xóa.</td></tr>
+    <tr><td><code>redelivery</code></td><td>Rabbit giao lại cùng message, ví dụ worker mất kết nối hoặc giữ message quá 12 giờ.</td></tr>
+    <tr><td><code>retry queue / DLQ</code></td><td>Retry queue giữ message để thử lại sau; DLQ giữ message lỗi đã dừng tự động để operator kiểm tra.</td></tr>
+    <tr><td><code>checkpoint</code></td><td>Lưu tiến độ và kết quả vào Mongo để lần chạy sau biết cần tiếp tục từ đâu.</td></tr>
+    <tr><td><code>reconcile</code></td><td>Đối chiếu tiến độ trong Mongo với trạng thái thật trên Solr.</td></tr>
+    <tr><td><code>gate</code></td><td>Danh sách điều kiện bắt buộc phải đạt trước khi qua bước tiếp theo.</td></tr>
+    <tr><td><code>topology</code></td><td>Cấu trúc collection: shard, hash range, replica, node và leader.</td></tr>
+    <tr><td><code>request ID</code></td><td>Mã riêng của một Solr action; dùng để hỏi action cũ đã chạy tới đâu, tránh gửi bừa action mới.</td></tr>
+    <tr><td><code>parent / child shard</code></td><td>Parent là shard cũ được chia; child là các shard mới sinh ra sau split.</td></tr>
+  </tbody>
+</table>
+<h3>
+  <strong>D.2.2 Worker xử lý chi tiết</strong>
+</h3>
+<ol>
+  <li><strong>Nhận một message:</strong> mỗi pod chỉ xử lý một message tại một thời điểm vì consumer concurrency bằng 1 và <code>prefetch=1</code>. Message được giữ ở trạng thái unacked.</li>
+  <li><strong>Đọc job trong Mongo:</strong> kiểm tra <code>job_id</code>, collection và schema. Nếu job đã <code>DONE</code>, ACK ngay và không gọi Solr. Message sai contract chuyển <code>FAILED</code> và DLQ.</li>
+  <li><strong>Đọc lại tiến độ:</strong> đặt <code>RUNNING</code>, xem <code>phase/current_action/actions</code>, rồi hỏi <code>REQUESTSTATUS</code> và <code>CLUSTERSTATUS</code>. Trạng thái thật của Solr được ưu tiên hơn phỏng đoán từ message.</li>
+  <li><strong>Kiểm tra trước khi split:</strong> đếm lại documents; kiểm tra số active shard, hash range, RF, node sống, CPU/heap/GC/disk và action khác đang chạy. Không đạt tạm thời thì retry; cấu trúc shard dở dang thì dừng để xử lý tay.</li>
+  <li><strong>Lập kế hoạch cố định:</strong> lấy danh sách parent ACTIVE ban đầu, tính <code>numSubShards=target/current</code>, sắp theo tên shard và lưu toàn bộ kế hoạch vào Mongo trước khi gọi Solr.</li>
+  <li><strong>Split tuần tự:</strong> với từng parent, lưu request ID rồi gọi <code>SPLITSHARD</code>; chờ kết quả, kiểm tra lỗi và xác nhận parent INACTIVE, children ACTIVE, ranges phủ đủ trước khi qua parent kế.</li>
+  <li><strong>Trải replica:</strong> RF=1 dùng <code>ADDREPLICA → kiểm tra bản mới → DELETEREPLICA source</code>. RF=2 chỉ ADD/DELETE nếu hai bản đang nằm không hợp lý, sau đó đặt preferred leader và gọi <code>REBALANCELEADERS</code>.</li>
+  <li><strong>Kiểm tra cuối:</strong> số active shard đúng target, ranges không thiếu/chồng, replica/leader đúng, không còn action của job đang chạy và query/update nằm trong ngưỡng cho phép.</li>
+  <li><strong>Kết thúc main job:</strong> lưu <code>status=DONE</code>, <code>cleanup_status=PENDING</code> và <code>inactive_parents</code>, sau đó mới ACK. Detector chưa được tạo wave mới cho collection này cho tới khi cleanup job riêng hoàn tất.</li>
+</ol>
+<ac:structured-macro ac:macro-id="9f010008-7c3a-4c81-9000-000000000008" ac:name="warning" ac:schema-version="1">
+  <ac:parameter ac:name="title">Giới hạn của cách giữ message bằng RabbitMQ</ac:parameter>
+  <ac:rich-text-body>
+    <p><code>consumer_timeout=43_200_000</code> chỉ đóng channel và đưa message trở lại queue khi quá 12 giờ; nó không dừng code hoặc Solr action của worker cũ. Vì vậy có thể có hai worker cùng chạm một job sau timeout/mất mạng. Request ID và bước đối chiếu giúp giảm rủi ro nhưng không loại bỏ hoàn toàn. Đây là trade-off đã chấp nhận; job quá 10 giờ phải phát cảnh báo.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
 <h1>
-  <span style="color: rgb(51,102,255);"> <strong>N. Tham khảo tham số</strong> </span>
+  <span style="color: rgb(51,102,255);">
+    <strong>E. Vì sao không dùng Placement Plugin / Autoscaling cho SPLITSHARD</strong>
+  </span>
 </h1>
-<ac:structured-macro ac:macro-id="c1d2e3f4-001e-4a00-9000-00000000001e" ac:name="info" ac:schema-version="1">
-  <ac:parameter ac:name="title">Required / Optional + param hay nhầm + cạm bẫy</ac:parameter>
+<ac:structured-macro ac:macro-id="9f010024-7c3a-4c81-9000-000000000024" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Sao không để Solr tự trải sub-shard cho đều?</ac:parameter>
   <ac:rich-text-body>
-    <h2>
-      <strong>N.1 Param nào bắt buộc, param nào optional</strong>
-    </h2>
-    <h3>
-      <strong>SPLITSHARD</strong>
-    </h3>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Param</th>
-          <th>Bắt buộc?</th>
-          <th>Default</th>
-          <th>Ghi chú</th>
-        </tr>
-        <tr>
-          <td>
-            <code>collection</code>
-          </td>
-          <td>
-            <strong>✅ Bắt buộc</strong>
-          </td>
-          <td>—</td>
-          <td>Collection chứa shard</td>
-        </tr>
-        <tr>
-          <td>
-            <code>shard</code>
-          </td>
-          <td>
-            <strong>✅ (hoặc <code>split.key</code>)</strong>
-          </td>
-          <td>—</td>
-          <td>Shard cần split</td>
-        </tr>
-        <tr>
-          <td>
-            <code>split.key</code>
-          </td>
-          <td>Optional</td>
-          <td>—</td>
-          <td>Thay cho <code>shard</code>: split theo route key</td>
-        </tr>
-        <tr>
-          <td>
-            <code>numSubShards</code>
-          </td>
-          <td>Optional</td>
-          <td>2</td>
-          <td>Range 2–8</td>
-        </tr>
-        <tr>
-          <td>
-            <code>ranges</code>
-          </td>
-          <td>Optional</td>
-          <td>—</td>
-          <td>Hash range tự định, chia không đều</td>
-        </tr>
-        <tr>
-          <td>
-            <code>splitMethod</code>
-          </td>
-          <td>Optional</td>
-          <td>
-            <code>rewrite</code>
-          </td>
-          <td>
-            <code>rewrite</code> / <code>link</code></td>
-        </tr>
-        <tr>
-          <td>
-            <code>splitByPrefix</code>
-          </td>
-          <td>Optional</td>
-          <td>false</td>
-          <td>compositeId có prefix (UUID thì bỏ)</td>
-        </tr>
-        <tr>
-          <td>
-            <code>splitFuzz</code>
-          </td>
-          <td>Optional</td>
-          <td>0</td>
-          <td>Nhiễu ranh giới range (hiếm dùng)</td>
-        </tr>
-        <tr>
-          <td>
-            <code>waitForFinalState</code>
-          </td>
-          <td>Optional</td>
-          <td>false</td>
-          <td>Nên set <code>true</code></td>
-        </tr>
-        <tr>
-          <td>
-            <code>timing</code>
-          </td>
-          <td>Optional</td>
-          <td>false</td>
-          <td>Trả timing từng phase</td>
-        </tr>
-        <tr>
-          <td>
-            <code>async</code>
-          </td>
-          <td>Optional (nên có)</td>
-          <td>—</td>
-          <td>Chạy nền, tránh treo HTTP</td>
-        </tr>
-      </tbody>
-    </table>
-    <h3>
-      <strong>MOVEREPLICA</strong>
-    </h3>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Param</th>
-          <th>Bắt buộc?</th>
-          <th>Default</th>
-          <th>Ghi chú</th>
-        </tr>
-        <tr>
-          <td>
-            <code>collection</code>
-          </td>
-          <td>
-            <strong>✅ Bắt buộc</strong>
-          </td>
-          <td>—</td>
-          <td></td>
-        </tr>
-        <tr>
-          <td>
-            <code>targetNode</code>
-          </td>
-          <td>
-            <strong>✅ Bắt buộc</strong>
-          </td>
-          <td>—</td>
-          <td>Node đích (bạn tự chọn theo mục I)</td>
-        </tr>
-        <tr>
-          <td>
-            <code>replica</code>
-          </td>
-          <td>
-            <strong>✅ (hoặc <code>sourceNode</code>)</strong>
-          </td>
-          <td>—</td>
-          <td>Tên core_nodeX cần dời</td>
-        </tr>
-        <tr>
-          <td>
-            <code>sourceNode</code>
-          </td>
-          <td>Optional</td>
-          <td>—</td>
-          <td>Thay <code>replica</code>: dời TẤT CẢ replica khỏi node này</td>
-        </tr>
-        <tr>
-          <td>
-            <code>timeout</code>
-          </td>
-          <td>Optional</td>
-          <td>600s</td>
-          <td>
-            <strong>Tăng theo size index</strong>
-          </td>
-        </tr>
-        <tr>
-          <td>
-            <code>waitForFinalState</code>
-          </td>
-          <td>Optional</td>
-          <td>false</td>
-          <td>Nên set <code>true</code></td>
-        </tr>
-        <tr>
-          <td>
-            <code>inPlaceMove</code>
-          </td>
-          <td>Optional</td>
-          <td>true</td>
-          <td>Chỉ tác dụng shared FS; local storage vô hiệu</td>
-        </tr>
-        <tr>
-          <td>
-            <code>async</code>
-          </td>
-          <td>Optional (nên có)</td>
-          <td>—</td>
-          <td></td>
-        </tr>
-      </tbody>
-    </table>
-    <h3>
-      <strong>ADDREPLICA</strong> (chỉ dùng khi nâng RF)
-    </h3>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Param</th>
-          <th>Bắt buộc?</th>
-          <th>Default</th>
-          <th>Ghi chú</th>
-        </tr>
-        <tr>
-          <td>
-            <code>collection</code>
-          </td>
-          <td>
-            <strong>✅ Bắt buộc</strong>
-          </td>
-          <td>—</td>
-          <td></td>
-        </tr>
-        <tr>
-          <td>
-            <code>shard</code>
-          </td>
-          <td>
-            <strong>✅ (hoặc <code>_route_</code>)</strong>
-          </td>
-          <td>—</td>
-          <td>Shard nhận replica mới</td>
-        </tr>
-        <tr>
-          <td>
-            <code>node</code>
-          </td>
-          <td>Optional</td>
-          <td>—</td>
-          <td>Không có → placement plugin chọn. Loại trừ <code>createNodeSet</code></td>
-        </tr>
-        <tr>
-          <td>
-            <code>createNodeSet</code>
-          </td>
-          <td>Optional</td>
-          <td>—</td>
-          <td>Danh sách node cho plugin chọn</td>
-        </tr>
-        <tr>
-          <td>
-            <code>type</code>
-          </td>
-          <td>Optional</td>
-          <td>
-            <code>NRT</code>
-          </td>
-          <td>NRT / TLOG / PULL</td>
-        </tr>
-        <tr>
-          <td>
-            <code>waitForFinalState</code>
-          </td>
-          <td>Optional</td>
-          <td>false</td>
-          <td>Nên set <code>true</code></td>
-        </tr>
-        <tr>
-          <td>
-            <code>timeout</code>
-          </td>
-          <td>Optional</td>
-          <td>600s</td>
-          <td>Tăng theo size index</td>
-        </tr>
-        <tr>
-          <td>
-            <code>async</code>
-          </td>
-          <td>Optional</td>
-          <td>—</td>
-          <td></td>
-        </tr>
-      </tbody>
-    </table>
-    <h2>
-      <strong>N.2 Giải thích param hay nhầm</strong>
-    </h2>
-    <table class="wrapped">
-      <tbody>
-        <tr>
-          <th>Param</th>
-          <th>Nghĩa</th>
-        </tr>
-        <tr>
-          <td>
-            <code>waitForFinalState</code>
-          </td>
-          <td>Param BẠN gửi. <code>true</code> = chờ replica mới <strong>active + recover xong</strong> mới trả về. Nên luôn bật.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>waitForState</code>
-          </td>
-          <td>
-            <strong>Không phải param</strong> — là hàm nội bộ của Solr (<code>zkStateReader.waitForState(...)</code>) chờ cluster state khớp điều kiện, timeout 60s hardcode. Bạn không set được.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>timeout</code>
-          </td>
-          <td>Thời gian tối đa <code>waitForFinalState</code> chờ. Default 600s (10 phút). Index lớn recover lâu hơn → phải tăng.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>async</code>
-          </td>
-          <td>Chạy nền, trả về 1 request id → poll <code>REQUESTSTATUS</code>. Không có thì HTTP treo tới khi xong.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>inPlaceMove</code>
-          </td>
-          <td>Shared FS: dời bằng cách trỏ lại data dir, không copy. Local storage: vô hiệu → luôn copy + recover đầy đủ.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>node</code> / <code>targetNode</code>
-          </td>
-          <td>Chỉ định node → <strong>bỏ qua placement plugin</strong>. Không truyền thì plugin tự chọn.</td>
-        </tr>
-        <tr>
-          <td>
-            <code>type</code>
-          </td>
-          <td>NRT (đọc+ghi realtime), TLOG (replay tlog), PULL (chỉ đọc, copy index). Khi move/add nên giữ đúng type như source.</td>
-        </tr>
-      </tbody>
-    </table>
-    <h2>
-      <strong>N.3 Cạm bẫy vận hành (đọc kỹ)</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-001f-4a00-9000-00000000001f" ac:name="warning" ac:schema-version="1">
-      <ac:rich-text-body>
-        <ol>
-          <li>
-            <strong>Timeout mặc định 600s + fail âm thầm.</strong> MOVEREPLICA/ADDREPLICA hết timeout mà replica mới chưa active thì <strong>không throw</strong>, chỉ ghi failure vào async result, <strong>không xoá source</strong> (để lại replica thừa trên target). Automation phải <strong>đọc async result</strong>, đừng coi <code>completed</code> là xong; và tăng <code>timeout</code> theo size index.</li>
-          <li>
-            <strong>ADDREPLICA / MOVEREPLICA KHÔNG check disk.</strong> Solr sẵn sàng copy tới khi đầy disk → <strong>disk projection ở app layer (mục I.1) là bắt buộc</strong>.</li>
-          <li>
-            <strong>ADDREPLICA <code>waitForFinalState</code> mặc định false</strong> → không set thì trả về khi core vừa tạo, chưa active. Luôn set <code>true</code>.</li>
-          <li>
-            <strong>Retry split bị chặn nếu sub-shard cũ đang ACTIVE.</strong> Split fail nửa chừng để lại sub-shard ACTIVE → lần split sau abort ("exists in active state") → phải dọn tay. Sub-shard inactive thì Solr tự dọn.</li>
-          <li>
-            <strong>SPLITSHARD tự check disk 2.0× (rewrite).</strong> Chỉ tắt được bằng sysprop <code>solr.shardSplit.checkDiskSpace.enabled=false</code> toàn cluster, không có param per-request. Ngưỡng 2.5× của pre-check (mục H.1) chặt hơn nên an toàn hơn.</li>
-        </ol>
-      </ac:rich-text-body>
-    </ac:structured-macro>
-    <h2>
-      <strong>N.4 Set gì cho flow của bạn</strong>
-    </h2>
-    <ac:structured-macro ac:macro-id="c1d2e3f4-0020-4a00-9000-000000000020" ac:name="code" ac:schema-version="1">
-      <ac:parameter ac:name="language">text</ac:parameter>
-      <ac:plain-text-body><![CDATA[SPLITSHARD  : collection + shard + splitMethod=rewrite
-              + waitForFinalState=true + async=<id> + timing=true
-
-MOVEREPLICA : collection + replica + targetNode=<node bạn chọn>
-              + waitForFinalState=true + timeout=<theo size> + async=<id>
-
-ADDREPLICA  : (chỉ khi nâng RF) collection + shard + node=<node> + type=<giống source>
-              + waitForFinalState=true + timeout=<theo size>
-
-Nhớ: waitForFinalState=true (chắc active) | timeout theo size (tránh fail âm thầm)
-     | async (không treo HTTP) | truyền node/targetNode -> bỏ qua placement plugin]]></ac:plain-text-body>
-    </ac:structured-macro>
+    <p>Placement Plugin chỉ chọn nơi đặt <strong>replica mới lúc tạo</strong>; nó không tự dời replica đã tồn tại sau split. SolrCloud Autoscaling cũ cũng không còn là cơ chế để chạy trigger rebalance trong Solr 9.</p>
   </ac:rich-text-body>
 </ac:structured-macro>
+<h2><strong>E.1 Placement Plugin chỉ lo bản mới, không tự sửa hotspot sau split</strong></h2>
+<p>Trong <code>SPLITSHARD</code>, replica đầu tiên của mỗi child được tạo trên node của parent leader. Việc chỉ định node ở bước này khiến placement plugin không có cơ hội trải các replica đầu tiên. Với RF=2, plugin có thể chọn node cho bản phụ được tạo thêm, nhưng không tự dời bản đã có và không đảm bảo leader được trải đều.</p>
+<table class="wrapped"><tbody>
+  <tr><th>Replica của child</th><th>Placement Plugin làm gì?</th></tr>
+  <tr><td>Bản đầu tiên</td><td>Không chọn node; nằm trên node của parent leader.</td></tr>
+  <tr><td>Bản phụ khi RF &gt; 1</td><td>Có thể chọn node khi Solr tạo bản mới.</td></tr>
+  <tr><td>Replica đã tồn tại</td><td>Không tự dời sau split.</td></tr>
+</tbody></table>
+<h2><strong>E.2 SolrCloud Autoscaling không còn là giải pháp trong Solr 9</strong></h2>
+<p>Autoscaling framework cũ với trigger/policy không còn trong Solr 9. Placement Plugin chỉ giải quyết quyết định “đặt replica mới ở đâu”, không cung cấp trigger nền để tự trải lại replica/leader sau split.</p>
+<h2><strong>E.3 Kết luận cho flow này</strong></h2>
+<ul>
+  <li><strong>RF=1:</strong> tạo replica mới mà không chỉ định node để Solr chọn, kiểm tra node đích, rồi xóa replica nguồn.</li>
+  <li><strong>RF=2:</strong> kiểm tra vị trí hai replica; chỉ ADD/DELETE khi cần, sau đó dùng <code>REBALANCELEADERS</code> và kiểm tra leader thực tế.</li>
+</ul>
+<ac:structured-macro ac:macro-id="9f010025-7c3a-4c81-9000-000000000025" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[SPLITSHARD: replica đầu tiên của child nằm trên node parent leader
+Placement Plugin: chỉ chọn node khi tạo replica mới, không dời replica đã có
+Autoscaling cũ: không còn trong Solr 9
+Kết quả: flow phải tự ADD/kiểm tra/DELETE cho RF=1 và kiểm tra/rebalance leader cho RF=2]]></ac:plain-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>F. Queue, Mongo và Rabbit consumer contract</strong>
+  </span>
+</h1>
+<h2>
+  <strong>F.1 Message contract</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010009-7c3a-4c81-9000-000000000009" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">json</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "schema_version": 2,
+  "job_id": "66b8f8e93b75c82c1fbdcd12",
+  "collection": "topic_100001",
+  "detected_doc_count": 100000000,
+  "observed_active_shards": 1,
+  "requested_target_shards": 4,
+  "detected_at": "2026-08-10T00:00:00+07:00"
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<ul>
+  <li>
+    <code>job_id</code> là Mongo <code>_id</code> dạng string và là dedupe key.</li>
+  <li>Message có thể được giao hoặc publish nhiều lần; consumer luôn load Mongo job theo <code>job_id</code>.</li>
+  <li>Worker luôn re-read Solr; message không quyết định topology cuối cùng.</li>
+  <li>Message collection khác Mongo job: đưa dead-letter, mark <code>FAILED/MESSAGE_CONTRACT_MISMATCH</code>, không gọi Solr.</li>
+</ul>
+<h2>
+  <strong>F.2 Publisher outbox</strong>
+</h2>
+<ul>
+  <li>Detector insert job với <code>enqueue_status=PENDING</code> trước khi publish.</li>
+  <li>Publisher worker lấy các bản ghi đến hạn theo <code>next_enqueue_at</code>, tăng <code>enqueue_attempt</code> và chờ tăng dần giữa các lần publish lỗi.</li>
+  <li>Retry không giới hạn cho tới <code>SENT</code>; alert nếu PENDING vượt operational SLA.</li>
+  <li>Nếu publish thành công nhưng mark SENT thất bại, publisher có thể gửi lại cùng <code>job_id</code>; consumer dedupe nên an toàn.</li>
+</ul>
+<h2>
+  <strong>F.3 Mongo job schema</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010010-7c3a-4c81-9000-000000000010" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">json</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "_id": "ObjectId(...)" ,
+  "schema_version": 2,
+  "collection": "topic_100001",
+  "detected_doc_count": 100000000,
+  "confirmed_doc_count": 100500000,
+  "observed_active_shards": 1,
+  "target_active_shards": 4,
+  "num_sub_shards": 4,
+  "replication_factor": 1,
+  "replica_types": {"NRT": 1, "TLOG": 0, "PULL": 0},
+  "status": "RUNNING",
+  "phase": "SPLIT_WAIT",
+  "topology_fingerprint": "...",
+  "split_plan": [],
+  "current_action": {},
+  "actions": [],
+  "inactive_parents": [],
+  "cleanup_status": null,
+  "enqueue_status": "SENT",
+  "enqueue_attempt": 1,
+  "next_enqueue_at": null,
+  "enqueue_last_error": null,
+  "created_at": "...",
+  "updated_at": "..."
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>
+  <strong>Job statuses:</strong>
+</p>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Status</th>
+      <th>Ý nghĩa</th>
+      <th>Chặn wave mới?</th>
+    </tr>
+    <tr>
+      <td>
+        <code>NEW</code>
+      </td>
+      <td>Đã tạo job, chờ worker.</td>
+      <td>Có</td>
+    </tr>
+    <tr>
+      <td>
+        <code>RUNNING</code>
+      </td>
+      <td>Worker đã đọc job và đang xử lý; Rabbit vẫn giữ message ở trạng thái unacked.</td>
+      <td>Có</td>
+    </tr>
+    <tr>
+      <td>
+        <code>RETRY_WAIT</code>
+      </td>
+      <td>Lỗi tạm thời; chờ <code>next_retry_at</code>.</td>
+      <td>Có</td>
+    </tr>
+    <tr>
+      <td>
+        <code>MANUAL_REQUIRED</code>
+      </td>
+      <td>Cấu trúc shard cần operator kiểm tra/sửa.</td>
+      <td>Có</td>
+    </tr>
+    <tr>
+      <td>
+        <code>DONE</code>
+      </td>
+      <td>Main reshard đã hoàn tất hoặc <code>NO_LONGER_ELIGIBLE</code>. Nếu có parent cũ thì <code>cleanup_status=PENDING</code>.</td>
+      <td>Có nếu cleanup chưa DONE hoặc còn parent INACTIVE.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>FAILED</code>
+      </td>
+      <td>Lỗi kết thúc trước khi thay đổi Solr, ví dụ message sai contract.</td>
+      <td>Không</td>
+    </tr>
+  </tbody>
+</table>
+<p><strong>Chống tạo trùng ở detector:</strong> tạo unique partial index theo <code>collection</code> khi status thuộc <code>NEW/RUNNING/RETRY_WAIT/MANUAL_REQUIRED</code> hoặc khi <code>cleanup_status != DONE</code>. Index này giảm duplicate job lúc detector chạy đồng thời; nó không giải quyết race lúc Rabbit giao lại một job đang chạy.</p>
+<p>
+  <strong>Phases:</strong> <code>QUEUED, DISCOVER, PLAN, SPLIT_SUBMIT, SPLIT_WAIT, SPLIT_VERIFY, PLACEMENT_PLAN, ADD_REPLICA_SUBMIT, ADD_REPLICA_WAIT, ADD_REPLICA_VERIFY, DELETE_BAD_REPLICA, DELETE_SOURCE_REPLICA, LEADER_PLAN, LEADER_REBALANCE, FINAL_VERIFY, COMPLETE</code>.</p>
+<h2>
+  <strong>F.4 Cách Rabbit consumer giữ và trả message</strong>
+</h2>
+<ul>
+  <li>Manual ACK, consumer concurrency bằng 1 trên mỗi pod và <code>prefetch=1</code>; một pod chỉ giữ một unacked message.</li>
+  <li>Queue đặt <code>consumer_timeout=43_200_000ms</code> (12 giờ) và phát cảnh báo khi job chạy quá 10 giờ.</li>
+  <li>ACK chỉ sau khi Mongo đã lưu <code>status=DONE</code>. Duplicate delivery thấy job đã DONE thì ACK và bỏ qua.</li>
+  <li>Lỗi tạm thời: lưu <code>RETRY_WAIT</code>, reject sang retry queue có TTL lần lượt <code>30s → 2m → 10m</code>; hết ba lần thì vào DLQ.</li>
+  <li><code>MANUAL_REQUIRED</code>, split dở dang hoặc lỗi không thể tự sửa: reject thẳng vào DLQ.</li>
+  <li>Không bật <code>x-single-active-consumer</code>. Khi scale N pods, hệ thống có thể chạy tối đa N collection song song.</li>
+</ul>
+<ac:structured-macro ac:macro-id="9f010011-7c3a-4c81-9000-000000000011" ac:name="warning" ac:schema-version="1">
+  <ac:parameter ac:name="title">Publisher outbox khác với quyền xử lý của consumer</ac:parameter>
+  <ac:rich-text-body>
+    <p>Outbox ở D1 chỉ bảo đảm job được publish và có thể tạo duplicate cùng <code>job_id</code>. D2 dựa vào manual ACK, Mongo checkpoint, request ID và bước đối chiếu Solr. Unique active-job index giảm duplicate từ detector nhưng không ngăn hoàn toàn hai worker cùng xử lý khi message bị redelivery.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>G. Đối chiếu trạng thái, request ID và vòng đời action</strong>
+  </span>
+</h1>
+<h2>
+  <strong>G.1 Request ID</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010012-7c3a-4c81-9000-000000000012" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[<mongoId>-<action>-<target>-a<attempt>
+
+66b8...-split-shard1-a1
+66b8...-addrep-shard1_2-a1
+66b8...-delbad-core_node15-a1
+66b8...-delsource-core_node2-a1
+66b8...-delshard-shard1-a1]]></ac:plain-text-body>
+</ac:structured-macro>
+<ul>
+  <li>Không chứa <code>/</code>; unique trong một job.</li>
+  <li>HTTP timeout/mất response không tăng attempt; poll lại request ID cũ.</li>
+  <li>Chỉ khi action đã kết thúc với lỗi và đã đối chiếu Solr mới tăng attempt.</li>
+  <li>Duplicate ID HTTP 400: poll ID đang tồn tại, không submit ID mới.</li>
+  <li>ID không được tái sử dụng sau <code>DELETESTATUS</code>.</li>
+</ul>
+<h2>
+  <strong>G.2 Các bước của một async action</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010013-7c3a-4c81-9000-000000000013" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[lưu action sắp làm + kết quả mong đợi
+→ đọc lại topology và action hiện tại
+→ gửi async action với request ID đã lưu
+→ poll REQUESTSTATUS
+→ kiểm tra status và nội dung lỗi
+→ đối chiếu CLUSTERSTATUS và kiểm tra query
+→ lưu kết quả + thêm vào lịch sử action
+→ DELETESTATUS
+→ action kế tiếp]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>
+  <code>REQUESTSTATUS=completed</code> không tự động nghĩa là thành công; phải kiểm tra failure trong response và verify topology. Sau khi persist result mới gọi <code>DELETESTATUS</code> để tránh tích lũy async state trong ZooKeeper.</p>
+<h2>
+  <strong>G.3 Cách tiếp tục khi message được giao lại</strong>
+</h2>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Mongo/Solr state</th>
+      <th>Xử lý</th>
+    </tr>
+    <tr>
+      <td>Intent đã persist, chưa submit</td>
+      <td>Đọc lại topology rồi submit cùng request ID.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>REQUESTSTATUS=running/submitted</code>
+      </td>
+      <td>Tiếp tục poll request ID đã lưu; không gửi action mới.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>completed</code>
+      </td>
+      <td>Inspect failure, verify expected topology, checkpoint rồi DELETESTATUS.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>failed</code>, topology chưa đổi</td>
+      <td>Persist failure; retry có kiểm soát với attempt mới.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>failed</code> hoặc <code>notfound</code>, expected topology đã đạt</td>
+      <td>Checkpoint action là reconciled success; không submit lại.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>notfound</code>, intent chưa từng submit và topology chưa đổi</td>
+      <td>Submit request ID đã persist.</td>
+    </tr>
+    <tr>
+      <td>Partial/ambiguous topology</td>
+      <td>
+        <code>MANUAL_REQUIRED</code>; không tự gửi lại action thay đổi Solr.</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <code>REBALANCELEADERS</code> là top-level synchronous operation trong flow này. Mongo vẫn có operation ID để audit nhưng không dùng ID đó với <code>REQUESTSTATUS</code>. Nếu HTTP timeout, re-read leader state trước khi retry.</p>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>H. Kiểm tra collection, node và disk trước khi split</strong>
+  </span>
+</h1>
+<h2>
+  <strong>H.1 Worker kiểm tra lại dữ liệu và cấu trúc shard</strong>
+</h2>
+<ul>
+  <li>Load active shards, ranges, replica name/core/node/type/state, leader, live nodes và RF thực tế từ <code>CLUSTERSTATUS</code>.</li>
+  <li>Query trực tiếp leader core của từng active parent với <code>rows=0&amp;distrib=false</code>; tổng confirmed count quyết định target cuối cùng.</li>
+  <li>Nếu target mới không lớn hơn current, đặt <code>DONE/NO_LONGER_ELIGIBLE</code>, không gọi action thay đổi Solr.</li>
+  <li>Nếu active count không thuộc <code>1/2/4/8</code>, có parent INACTIVE cũ hoặc partial topology, chuyển <code>MANUAL_REQUIRED</code>.</li>
+</ul>
+<h2>
+  <strong>H.2 Đo trực tiếp từng node</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010014-7c3a-4c81-9000-000000000014" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[/admin/info/system
+/admin/metrics?group=node,jvm
+/admin/metrics?group=core
+
+Đo 5 lần, cách nhau 15 giây; dùng median. Gọi trực tiếp node, không qua VIP.]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>
+  <strong>Hard filter:</strong>
+</p>
+<ul>
+  <li>Node unreachable hoặc restart dưới 30 phút.</li>
+  <li>
+    <code>load / processors &gt; 0.70</code>.</li>
+  <li>
+    <code>heap.used / heap.max &gt; 0.80</code>.</li>
+  <li>
+    <code>gcRatio &gt; 0.15</code>.</li>
+  <li>Disk free dưới 20%.</li>
+  <li>Node đang recovery hoặc admin error tăng trong cửa sổ đo.</li>
+</ul>
+<p>Không dùng “free RAM” làm tín hiệu chính. Nếu metrics thiếu hoặc không còn node đạt gate, chuyển <code>RETRY_WAIT</code>; không chọn node “ít xấu nhất”.</p>
+<h2>
+  <strong>H.3 Điều kiện bắt buộc trước khi split</strong>
+</h2>
+<ul>
+  <li>Collection GREEN; parent và toàn bộ replica ACTIVE; đúng một leader.</li>
+  <li>Parent leader node đạt hard filter.</li>
+  <li>
+    <code>leader_usable_disk ≥ 2.5 × parent_index_size</code>.</li>
+  <li>Không có child ACTIVE ngoài split plan hoặc action thay đổi cấu trúc khác đang chạy.</li>
+  <li>
+    <code>current</code>, <code>target</code> và <code>numSubShards</code> hợp lệ.</li>
+</ul>
+<p>Leader thiếu disk/không khỏe: <code>RETRY_WAIT</code>. Có child active không thuộc plan hoặc cluster state không nhất quán: <code>MANUAL_REQUIRED</code>.</p>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>I. Thực hiện split</strong>
+  </span>
+</h1>
+<h2>
+  <strong>I.1 Lập kế hoạch split cố định</strong>
+</h2>
+<ul>
+  <li>Snapshot toàn bộ active parents trước action đầu tiên.</li>
+  <li>
+    <code>num_sub_shards = target_active_shards / current_active_shards</code>.</li>
+  <li>Sort parent theo shard name; không split hai parent đồng thời.</li>
+  <li>Persist parent range, doc count, leader replica/node, expected children và expected replica types.</li>
+  <li>Parent đã verify thành công không được submit lại sau worker restart.</li>
+</ul>
+<ac:structured-macro ac:macro-id="9f010015-7c3a-4c81-9000-000000000015" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[GET /solr/admin/collections
+  ?action=SPLITSHARD
+  &collection=topic_100001
+  &shard=shard1
+  &numSubShards=4
+  &splitMethod=rewrite
+  &waitForFinalState=true
+  &timing=true
+  &async=66b8...-split-shard1-a1
+  &wt=json]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>Không dùng custom <code>ranges</code>, <code>split.key</code>, <code>splitByPrefix</code> hoặc <code>splitMethod=link</code> trong flow này. Giả định document ID hash phân bố phù hợp.</p>
+<h2>
+  <strong>I.2 Kiểm tra kết quả split của từng parent</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010016-7c3a-4c81-9000-000000000016" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[parent.state == INACTIVE
+child_count == numSubShards
+all children and replicas == ACTIVE
+exactly one leader per child
+child replica count/types match parent
+union(child ranges) == parent range
+intersection(any two child ranges) == empty
+async response has no failure
+distributed and per-child query smoke pass]]></ac:plain-text-body>
+</ac:structured-macro>
+<ul>
+  <li>Child còn recovery: tiếp tục poll/verify.</li>
+  <li>Thiếu child, range gap/overlap, leader sai hoặc partial child active: <code>MANUAL_REQUIRED</code>.</li>
+  <li>Không bật lại parent và không split lại cùng parent trước khi operator xử lý partial topology.</li>
+</ul>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>J. RF=1: tạo bản mới → kiểm tra → xóa bản nguồn</strong>
+  </span>
+</h1>
+<p>Sau split, first replica của các children nằm trên parent leader node. Với mỗi parent, giữ child đầu tiên theo shard-name order trên source; các child còn lại được relocate tuần tự.</p>
+<h2>
+  <strong>J.1 ADDREPLICA để Solr tự chọn node đích</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010017-7c3a-4c81-9000-000000000017" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[GET /solr/admin/collections
+  ?action=ADDREPLICA
+  &collection=topic_100001
+  &shard=shard1_2
+  &type=NRT
+  &waitForFinalState=true
+  &async=66b8...-addrep-shard1_2-a1
+  &wt=json
+
+Không truyền: node, targetNode, createNodeSet.
+type phải giống source replica.]]></ac:plain-text-body>
+</ac:structured-macro>
+<h2>
+  <strong>J.2 Kiểm tra replica mới</strong>
+</h2>
+<ul>
+  <li>Discover đúng replica mới; replica ACTIVE và type đúng.</li>
+  <li>Target khác source và không có replica khác của cùng shard.</li>
+  <li>Target node đạt hard health gate; disk sau recovery còn ít nhất 20%.</li>
+  <li>Child vẫn có đúng một leader; direct query thành công; async response không có failure.</li>
+</ul>
+<h2>
+  <strong>J.3 Xử lý khi Solr chọn node không đạt yêu cầu</strong>
+</h2>
+<ol>
+  <li>Giữ nguyên source replica.</li>
+  <li>Persist reason và identity của replica mới.</li>
+  <li>
+    <code>DELETEREPLICA</code> chính xác replica mới; verify đã biến mất.</li>
+  <li>Checkpoint và <code>DELETESTATUS</code>; đo lại cluster.</li>
+  <li>Nếu lần 1 chọn sai node: chờ 30 giây rồi thử lần 2; nếu vẫn sai: chờ 2 phút rồi thử lần 3.</li>
+</ol>
+<p>Sau ba lần Solr chọn node không đạt: <code>MANUAL_REQUIRED/SOLR_AUTO_PLACEMENT_REJECTED</code> và đưa message vào DLQ. Xóa replica mới bị lỗi: chuyển MANUAL_REQUIRED ngay.</p>
+<h2>
+  <strong>J.4 Xóa replica nguồn</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010018-7c3a-4c81-9000-000000000018" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[GET /solr/admin/collections
+  ?action=DELETEREPLICA
+  &collection=topic_100001
+  &shard=shard1_2
+  &replica=core_node2
+  &async=66b8...-delsource-core_node2-a1
+  &wt=json]]></ac:plain-text-body>
+</ac:structured-macro>
+<ul>
+  <li>Chỉ delete sau khi replica mới qua toàn bộ gate.</li>
+  <li>Verify source biến mất, target vẫn ACTIVE, RF trở lại 1, target là leader và query health đạt.</li>
+  <li>Timeout: poll ID cũ và reconcile. Source còn + target active thì resume delete, không ADD lần nữa.</li>
+  <li>Source mất nhưng target không active: <code>MANUAL_REQUIRED</code> khẩn cấp.</li>
+</ul>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>K. RF=2: kiểm tra vị trí replica và trải leader</strong>
+  </span>
+</h1>
+<h2>
+  <strong>K.1 Kiểm tra vị trí hai replica</strong>
+</h2>
+<ul>
+  <li>Mỗi child có đúng hai replicas, đúng type như parent và đều ACTIVE.</li>
+  <li>Hai replicas ở hai node khác nhau khi cluster có ít nhất hai live nodes.</li>
+  <li>Các node đạt health/disk gate; leader chỉ là NRT/TLOG, không phải PULL.</li>
+  <li>Nếu placement đạt, không copy thêm data và chuyển thẳng leader plan.</li>
+  <li>Nếu placement sai, ADD không chỉ định node, verify target rồi delete chính xác bad/source replica; giữ RF=2 sau khi hoàn tất.</li>
+</ul>
+<h2>
+  <strong>K.2 Kế hoạch trải leader</strong>
+</h2>
+<ul>
+  <li>Leader chỉ nằm trên eligible NRT/TLOG replica ACTIVE.</li>
+  <li>Số leader giữa eligible nodes chênh tối đa một khi topology cho phép.</li>
+  <li>Tie-break theo số leader hiện tại, stress score, rồi node name.</li>
+  <li>Persist toàn bộ leader plan trước khi mutate replica properties.</li>
+</ul>
+<ac:structured-macro ac:macro-id="9f010019-7c3a-4c81-9000-000000000019" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[GET /solr/admin/collections
+  ?action=ADDREPLICAPROP
+  &collection=topic_100001
+  &shard=shard1_2
+  &replica=core_node15
+  &property=preferredLeader
+  &property.value=true
+  &shardUnique=true
+
+GET /solr/admin/collections
+  ?action=REBALANCELEADERS
+  &collection=topic_100001
+  &maxAtOnce=1
+  &maxWaitSeconds=120
+  &wt=json]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>HTTP/status 0 chỉ cho biết request được xử lý. Worker phải inspect Summary và verify leader thực tế trên từng child. Timeout: re-read topology; chỉ retry khi preferred replica còn ACTIVE và chưa thành leader. Retry giới hạn; không dùng FORCELEADER.</p>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>L. Kiểm tra kết quả, cleanup riêng và xử lý lỗi</strong>
+  </span>
+</h1>
+<h2>
+  <strong>L.1 Kiểm tra khi collection vẫn nhận write</strong>
+</h2>
+<p>Không yêu cầu <code>post_doc_count == pre_doc_count</code>, vì add/update/delete vẫn tiếp tục trong quá trình reshard. Doc count chỉ dùng cho audit và phát hiện discontinuity bất thường.</p>
+<ul>
+  <li>Hash ranges đầy đủ, không gap/overlap; parent INACTIVE, children ACTIVE.</li>
+  <li>RF/type/leader đúng; không có recovery ngoài action đang xử lý.</li>
+  <li>Không có async response chứa failure.</li>
+  <li>Distributed query và direct child query smoke thành công.</li>
+  <li>Update error rate không vượt production error budget trong action window.</li>
+  <li>Không có thay đổi doc count bất thường mà số liệu write không giải thích được.</li>
+</ul>
+<p>Không lấy được số liệu query/update cần thiết: <code>RETRY_WAIT</code>; không chạy action xóa hoặc thay đổi dữ liệu.</p>
+<h2>
+  <strong>L.2 Kiểm tra cuối và ranh giới với cleanup job</strong>
+</h2>
+<ac:structured-macro ac:macro-id="9f010020-7c3a-4c81-9000-000000000020" ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[active_shards == target_active_shards
+active_shards <= 8
+range coverage complete
+all children and replicas ACTIVE
+RF/type/leader correct
+no job-owned async request running
+all async responses inspected
+query/update health within budget
+all actions checkpointed in Mongo]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>Khi đạt toàn bộ điều kiện: lưu cùng một lần <code>status=DONE</code>, <code>phase=COMPLETE</code>, <code>cleanup_status=PENDING</code> và danh sách <code>inactive_parents</code>; sau khi Mongo ghi thành công mới ACK Rabbit message. Parent là bản cũ tại thời điểm split, không chứa đầy đủ writes về sau và không phải nguồn rollback.</p>
+<ol>
+  <li>Main consumer kết thúc tại đây và không giữ message trong thời gian chờ cleanup.</li>
+  <li>Detector chặn wave mới nếu <code>cleanup_status != DONE</code> hoặc còn parent INACTIVE.</li>
+  <li>Operator approval, <code>DELETESHARD</code>, kiểm tra parent đã biến mất và cập nhật <code>cleanup_status=DONE</code> thuộc cleanup job/wiki riêng, ngoài phạm vi tài liệu này.</li>
+</ol>
+<h2>
+  <strong>L.3 Bảng xử lý lỗi</strong>
+</h2>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Tình huống</th>
+      <th>Xử lý</th>
+    </tr>
+    <tr>
+      <td>Worker crash trước submit</td>
+      <td>Đọc intent đã lưu, đối chiếu Solr rồi submit cùng request ID.</td>
+    </tr>
+    <tr>
+      <td>Crash hoặc mất response sau submit</td>
+      <td>Poll request ID đã lưu; không submit ID mới.</td>
+    </tr>
+    <tr>
+      <td>Duplicate queue delivery</td>
+      <td>Load theo <code>job_id</code>; nếu DONE thì ACK/bỏ qua, nếu chưa DONE thì đối chiếu checkpoint và Solr trước khi tiếp tục.</td>
+    </tr>
+    <tr>
+      <td>Completed có failure</td>
+      <td>Xem là lỗi; đối chiếu cấu trúc shard trước khi retry.</td>
+    </tr>
+    <tr>
+      <td>Split partial với active child</td>
+      <td>
+        <code>MANUAL_REQUIRED</code>; reject thẳng DLQ, không tự split lại.</td>
+    </tr>
+    <tr>
+      <td>ADD tạo bad target</td>
+      <td>Giữ source; delete new replica; retry tối đa 3.</td>
+    </tr>
+    <tr>
+      <td>ADD thành công, delete source thất bại</td>
+      <td>Giữ extra replica; resume delete; không ADD lại.</td>
+    </tr>
+    <tr>
+      <td>Source mất, target không active</td>
+      <td>
+        <code>MANUAL_REQUIRED</code> khẩn cấp.</td>
+    </tr>
+    <tr>
+      <td>REBALANCE timeout</td>
+      <td>Re-read leader state; không poll app operation ID.</td>
+    </tr>
+    <tr>
+      <td>Kiểm tra cuối không đạt</td>
+      <td>Không đặt DONE/ACK; lỗi tạm thời đi retry queue, cấu trúc dở dang chuyển MANUAL_REQUIRED và DLQ.</td>
+    </tr>
+    <tr>
+      <td>Job quá 10 giờ</td>
+      <td>Phát cảnh báo để operator kiểm tra trước mốc Rabbit timeout 12 giờ.</td>
+    </tr>
+    <tr>
+      <td>Quá 12 giờ hoặc mất channel</td>
+      <td>Rabbit requeue/redelivery. Worker mới đối chiếu request ID cũ; chấp nhận rủi ro worker cũ vẫn chạy.</td>
+    </tr>
+    <tr>
+      <td>Lỗi tạm thời</td>
+      <td><code>RETRY_WAIT</code>; retry sau 30s, 2m, 10m rồi DLQ nếu vẫn lỗi.</td>
+    </tr>
+    <tr>
+      <td>Active shards đã bằng 8</td>
+      <td>Skip với <code>MAX_SHARDS_REACHED</code>.</td>
+    </tr>
+  </tbody>
+</table>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>M. Theo dõi, triển khai và ảnh hưởng dịch vụ</strong>
+  </span>
+</h1>
+<h2>
+  <strong>M.1 Số liệu và cảnh báo</strong>
+</h2>
+<ul>
+  <li>Candidates theo target 2/4/8; job count theo status/phase.</li>
+  <li>Duration của SPLIT/ADD/DELETE/REBALANCE, async poll duration và recovery duration.</li>
+  <li>Số lần Solr chọn node không đạt yêu cầu theo node/lý do; parent index size và lượng disk tạm tăng.</li>
+  <li>Query/update latency và error rate trước, trong, sau action.</li>
+  <li>Phân bố leader/replica; số job <code>cleanup_status=PENDING</code> và thời gian parent ở trạng thái INACTIVE.</li>
+  <li>Rabbit: số unacked message, tuổi message, redelivery, số message ở từng retry queue và DLQ.</li>
+  <li>Cảnh báo job chạy quá 10 giờ; mọi MANUAL_REQUIRED, async quá timeout, Solr chọn node không đạt ba lần, source mất/target chưa active, cleanup quá SLA và collection đã chạm giới hạn 8 shard.</li>
+</ul>
+<h2>
+  <strong>M.2 Các bước triển khai</strong>
+</h2>
+<ol>
+  <li>Dry-run detector: chỉ ghi proposed target/split plan.</li>
+  <li>Staging RF=1: test <code>1→2</code>, <code>1→4</code>, sau đó <code>1→8</code>.</li>
+  <li>Staging RF=2: kiểm tra vị trí replica và <code>REBALANCELEADERS</code>.</li>
+  <li>Production canary một RF=1 collection vào off-peak.</li>
+  <li>Production RF=2 sau khi canary đạt error/latency budget.</li>
+</ol>
+<p>Ban đầu deploy một consumer pod, concurrency 1 và <code>prefetch=1</code>. Khi scale N pods, có thể chạy N collection song song; phải theo dõi tải cluster và test race do redelivery trước khi tăng. Parent cleanup thuộc job/wiki riêng.</p>
+<h2>
+  <strong>M.3 Ảnh hưởng dịch vụ</strong>
+</h2>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Bước</th>
+      <th>Planned downtime</th>
+      <th>Rủi ro cần đo</th>
+    </tr>
+    <tr>
+      <td>Detector/plan</td>
+      <td>Không</td>
+      <td>Solr/Mongo query load.</td>
+    </tr>
+    <tr>
+      <td>SPLITSHARD rewrite</td>
+      <td>Không</td>
+      <td>CPU, disk I/O, query/update latency.</td>
+    </tr>
+    <tr>
+      <td>ADDREPLICA recovery</td>
+      <td>Không</td>
+      <td>Network/disk I/O, temporary extra replica.</td>
+    </tr>
+    <tr>
+      <td>Delete source/leader election</td>
+      <td>Không planned</td>
+      <td>Write retry hoặc transient error khi leader đổi.</td>
+    </tr>
+    <tr>
+      <td>REBALANCELEADERS</td>
+      <td>Không planned</td>
+      <td>Transient write impact trên shard đổi leader.</td>
+    </tr>
+    <tr>
+      <td>DELETESHARD inactive parent</td>
+      <td>Không</td>
+      <td>Thuộc cleanup job riêng; chỉ chạy sau approval.</td>
+    </tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:macro-id="9f010021-7c3a-4c81-9000-000000000021" ac:name="note" ac:schema-version="1">
+  <ac:parameter ac:name="title">SLA wording</ac:parameter>
+  <ac:rich-text-body>
+    <p>Không cam kết “zero downtime tuyệt đối”. Acceptance dựa trên error budget và latency quan sát được ở staging/canary; chạy off-peak và yêu cầu client retry.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>N. Kế hoạch test và tiêu chí chấp nhận</strong>
+  </span>
+</h1>
+<h2>
+  <strong>N.1 Unit test và contract test</strong>
+</h2>
+<ul>
+  <li>Boundary: <code>39,999,999→1</code>, <code>40,000,000→2</code>, <code>79,999,999→2</code>, <code>80,000,000→4</code>, <code>159,999,999→4</code>, <code>160,000,000→8</code>.</li>
+  <li>
+    <code>1/100M→target 4/numSubShards 4</code>; <code>2/180M→target 8/numSubShards 4</code>.</li>
+  <li>Không downscale; current count 3/5/6 tạo MANUAL_REQUIRED audit job và không enqueue.</li>
+  <li>Queue schema v2, duplicate publish/delivery và message/Mongo mismatch.</li>
+  <li>Request IDs unique; HTTP timeout không tăng attempt; chỉ lỗi đã kết thúc và đã đối chiếu mới tăng attempt.</li>
+  <li>Manual ACK, <code>prefetch=1</code>, concurrency 1/pod; DONE được ACK và duplicate DONE được ACK/bỏ qua.</li>
+  <li>Lỗi tạm thời đi qua retry delay <code>30s → 2m → 10m</code> rồi DLQ; MANUAL_REQUIRED đi DLQ ngay.</li>
+</ul>
+<h2>
+  <strong>N.2 Integration test và tình huống lỗi</strong>
+</h2>
+<ul>
+  <li>Split <code>1→2</code>, <code>1→4</code>, <code>1→8</code>, <code>2→4</code>, <code>2→8</code>, <code>4→8</code>.</li>
+  <li>Skew giữa parents nhưng vẫn split toàn bộ initial active parents.</li>
+  <li>RF=1 ADD/verify/delete; bad target ba lần; cleanup bad replica failure.</li>
+  <li>RF=2 khi vị trí replica hợp lệ thì chỉ rebalance; nếu không hợp lệ thì ADD/delete rồi rebalance.</li>
+  <li>Kill worker trước/sau mỗi checkpoint; mất HTTP response; duplicate queue; worker mới phải đối chiếu request ID cũ.</li>
+  <li>Partial split, node restart, target hết disk, ZooKeeper disconnect và metrics unavailable.</li>
+  <li>Concurrent add/update/delete trong suốt split; kiểm tra bằng cấu trúc shard và số liệu query/write, không dùng exact count equality.</li>
+  <li>Job vượt 10 giờ phát cảnh báo; vượt 12 giờ bị đóng channel và redelivery.</li>
+  <li>Scale hai pods: hai collection chạy song song; mô phỏng cùng job bị redelivery và ghi nhận race còn lại đã chấp nhận.</li>
+  <li>Kiểm tra cuối tạo <code>DONE + cleanup_status=PENDING</code>; detector chặn wave mới cho tới khi cleanup job riêng đặt DONE.</li>
+</ul>
+<h2>
+  <strong>N.3 Tiêu chí chấp nhận</strong>
+</h2>
+<ul>
+  <li>Trong điều kiện bình thường, checkpoint + request ID ngăn gửi lại action đã hoàn tất; test ghi nhận rằng redelivery khi worker cũ còn chạy vẫn có residual race đã chấp nhận.</li>
+  <li>Không xóa source trước khi target ACTIVE và verified.</li>
+  <li>Không vượt target hoặc cap 8; RF/type/range/leader cuối cùng đúng.</li>
+  <li>Không còn replica thừa sau DONE.</li>
+  <li>Endpoint collection không thay đổi.</li>
+  <li>Không có planned downtime; staging/canary nằm trong latency/error budget đã chốt.</li>
+</ul>
+<h1>
+  <span style="color: rgb(51,102,255);">
+    <strong>O. Tham khảo Collections API cho flow</strong>
+  </span>
+</h1>
+<table class="wrapped">
+  <tbody>
+    <tr>
+      <th>Action</th>
+      <th>Tham số chính</th>
+      <th>Quy tắc của flow</th>
+    </tr>
+    <tr>
+      <td>
+        <code>SPLITSHARD</code>
+      </td>
+      <td>
+        <code>collection, shard, numSubShards, splitMethod=rewrite, waitForFinalState=true, timing=true, async</code>
+      </td>
+      <td>
+        <code>numSubShards</code> chỉ 2/4/8; chạy từng parent tuần tự.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>ADDREPLICA</code>
+      </td>
+      <td>
+        <code>collection, shard, type, waitForFinalState=true, async</code>
+      </td>
+      <td>Không truyền <code>node/targetNode/createNodeSet</code>; verify target trước delete source.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>DELETEREPLICA</code>
+      </td>
+      <td>
+        <code>collection, shard, replica, async</code>
+      </td>
+      <td>Luôn chỉ định đúng replica; không delete theo count.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>ADDREPLICAPROP</code>
+      </td>
+      <td>
+        <code>collection, shard, replica, property=preferredLeader, property.value=true, shardUnique=true</code>
+      </td>
+      <td>Persist leader plan trước khi set property.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>REBALANCELEADERS</code>
+      </td>
+      <td>
+        <code>collection, maxAtOnce=1, maxWaitSeconds=120</code>
+      </td>
+      <td>Top-level synchronous; inspect Summary và verify actual leader.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>DELETESHARD</code>
+      </td>
+      <td>
+        <code>collection, shard, async</code>
+      </td>
+      <td>Không thuộc main consumer; cleanup job riêng chỉ xóa inactive parent sau khi main job kiểm tra cuối thành công và operator approve.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>REQUESTSTATUS</code>
+      </td>
+      <td>
+        <code>requestid</code>
+      </td>
+      <td>Completed vẫn phải inspect failure và verify topology.</td>
+    </tr>
+    <tr>
+      <td>
+        <code>DELETESTATUS</code>
+      </td>
+      <td>
+        <code>requestid</code>
+      </td>
+      <td>Chỉ gọi sau khi result đã checkpoint; tránh đầy async status store.</td>
+    </tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:macro-id="9f010022-7c3a-4c81-9000-000000000022" ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Vì sao không dùng MOVEREPLICA trong flow này?</ac:parameter>
+  <ac:rich-text-body>
+    <p>Collections API đó yêu cầu <code>targetNode</code> và nội bộ cũng thực hiện ADD rồi DELETE. Flow cần để Solr Placement Plugin chọn từ toàn bộ live cluster, sau đó app kiểm tra health/disk trước khi xóa source; vì vậy tách rõ <code>ADDREPLICA → verify → DELETEREPLICA</code>.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<h2>
+  <strong>O.1 Cạm bẫy vận hành</strong>
+</h2>
+<ol>
+  <li>
+    <code>waitForFinalState=true</code> không thay thế post-action topology verification.</li>
+  <li>Collections API không đảm bảo target đạt application health/disk gate; app phải kiểm tra và cleanup bad placement.</li>
+  <li>Async <code>completed</code> có thể chứa failure; luôn inspect response.</li>
+  <li>Async statuses không tự dọn; checkpoint rồi gọi <code>DELETESTATUS</code>.</li>
+  <li>Split rewrite cần hơn 2× parent index disk; flow dùng safety gate 2.5×.</li>
+  <li>Child ACTIVE từ partial split làm retry nguy hiểm; chuyển MANUAL_REQUIRED.</li>
+  <li>Parent INACTIVE không phản ánh writes về sau và không được dùng làm rollback tự động.</li>
+</ol>
+<h2>
+  <strong>O.2 Giả định</strong>
+</h2>
+<ul>
+  <li>SolrCloud 9.8.1, collection dùng compositeId hash routing.</li>
+  <li>Document ID phân bố hash phù hợp; không dùng splitByPrefix.</li>
+  <li>Production hỗ trợ RF=1 và RF=2; cluster đủ capacity cho tối đa 8 active shards cùng RF.</li>
+  <li>
+    <code>20M docs/shard</code> là target tại thời điểm wave, không phải hard maximum; shard có thể tăng gần 40M trước wave kế tiếp.</li>
+</ul>
+<p>
+  <strong>Official references:</strong> <a href="https://solr.apache.org/guide/solr/9_8/deployment-guide/shard-management.html">Shard Management Commands</a>, <a href="https://solr.apache.org/guide/solr/9_8/deployment-guide/replica-management.html">Replica Management Commands</a>, <a href="https://solr.apache.org/guide/solr/9_8/configuration-guide/collections-api.html">Collections API</a>, <a href="https://www.rabbitmq.com/docs/4.1/consumers">RabbitMQ Consumers</a>, <a href="https://www.rabbitmq.com/docs/confirms">RabbitMQ Acknowledgements</a>, <a href="https://www.rabbitmq.com/docs/consumer-prefetch">RabbitMQ Consumer Prefetch</a>.</p>
 <p>
   <br/>
 </p>

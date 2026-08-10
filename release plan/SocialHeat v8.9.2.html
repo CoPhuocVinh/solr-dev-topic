@@ -1,0 +1,974 @@
+<p>
+  <strong>Change log</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Changed Content</th>
+      <th>Changed By</th>
+      <th>Approved By</th>
+      <th>Approved date</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>31/07/2026</td>
+      <td>* Lên plan release</td>
+      <td>
+        <br/>
+      </td>
+      <td>
+        <br/>
+      </td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>1. Thông tin phát hành</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>Tên release / phiên bản</th>
+      <th>Ngày/giờ triển khai</th>
+      <th>Môi trường</th>
+      <th>PO / Requester</th>
+      <th>Tech Owner</th>
+      <th>Jira Task</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>SocialHeat v8.9.2</td>
+      <td>04/08/2026 - 10:00</td>
+      <td>Production</td>
+      <td>
+        <br/>
+      </td>
+      <td>
+        <br/>
+      </td>
+      <td>
+        <div class="content-wrapper">
+          <p>
+            <br/>
+          </p>
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>2. Phạm vi Releases</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>Tính năng</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-10274">SHDIY-10274</a> — <span style="color: rgb(51,51,51);">Migrate các topic chạy neutral (thay thế cho unrated)</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-10233">SHDIY-10233</a> — <span style="color: rgb(51,51,51);">Migration-tag Share No Text_Owned Media for current topic</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-10115">SHDIY-10115</a> — <span style="color: rgb(51,51,51);">Crisis New Workflow - Define business requirement</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-9976">SHDIY-9976</a> — <span style="color: rgb(51,51,51);">Add auto-tag Share No Text_Owned Media for System Trigger</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-9975">SHDIY-9975</a> — <span style="color: rgb(51,51,51);">Implement System Trigger tab with per-topic sentiment configuration</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-9786">SHDIY-9786</a> — <span style="color: rgb(51,51,51);">Crisis: AI Daily Auto Summarize</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-9784">SHDIY-9784</a> — <span style="color: rgb(51,51,51);">Crisis: Build Push Notification Mechanism</span>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <a href="https://jira.younetco.com/browse/SHDIY-9706">SHDIY-9706</a> — <span style="color: rgb(51,51,51);">Bổ sung field ai_spam, ai_attributes, ai_tags khi chạy submit request</span>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>3. Pre-deploy</strong>
+</p>
+<h3>Release Preparation</h3>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>STT</th>
+      <th>Công việc</th>
+      <th>Trạng thái</th>
+      <th>Người phụ trách</th>
+      <th>Người hỗ trợ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>QC xác nhận deploy</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>1</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>QC Lead</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Release Staging</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>2</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Dev Team</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Prepare release branches</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>3</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Dev Team</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Đánh tags / merge code trước khi release</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>4</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Dev Team</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Lên kế hoạch về Release Plan</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>5</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Dev Team</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Thông báo thời gian và release plan đến DevOps</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>6</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Dev Team</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<h3>Config / Migration</h3>
+<table class="wrapped relative-table" style="width: 48.0077%;">
+  <colgroup>
+    <col style="width: 6.06002%;"/>
+    <col style="width: 52.1404%;"/>
+    <col style="width: 11.3625%;"/>
+    <col style="width: 16.9175%;"/>
+    <col style="width: 13.3825%;"/>
+  </colgroup>
+  <thead>
+    <tr>
+      <th>STT</th>
+      <th>Công việc</th>
+      <th>Trạng thái</th>
+      <th>Người phụ trách</th>
+      <th>Người hỗ trợ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>
+        <p>Đánh tag sl-api-migrates<br/>Repo: <a href="https://git.younetmedia.com/YNM/sl-api-migrates">sl-api-migrates</a>
+        </p>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>7</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Leader Team App</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>
+        <p>Đánh tag sl-api<br/>Repo: <a href="https://git.younetmedia.com/YNM/social-listening-api">social-listening-api</a>
+        </p>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>8</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Leader Team App</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>
+        <p>Đánh tag ynm-studio<br/>Repo: <a href="https://git.younetmedia.com/YNM/ynm-studio">ynm-studio</a>
+        </p>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>9</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Leader Team App</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>
+        <p>Đánh tag socialheat<br/>Repo: <a class="" href="https://git.younetmedia.com/YNM/socialheat">socialheat</a>
+        </p>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>10</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Leader Team App</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Merge vào branch master trong src ynm-socialheat<br/>Repo: <a href="https://git.younetmedia.com/YNM-APP/ynm-socialheat">ynm-socialheat</a>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>11</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Leader Team App</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>4. Thành phần &amp; Thứ tự build/deploy</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>STT</th>
+      <th>Thành phần</th>
+      <th>Build/Artifact</th>
+      <th>Hành động chính</th>
+      <th>Trạng thái</th>
+      <th>Người phụ trách</th>
+      <th>Người hỗ trợ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Database migrations</td>
+      <td>Jenkins: <a href="https://jenkins.younetmedia.com/job/sl-api-migrates/">sl-api-migrates</a>
+        <br/>Repo: <a href="https://git.younetmedia.com/YNM/sl-api-migrates">sl-api-migrates</a>
+        <br/>Branch: <span style="color: rgb(51,51,51);">TBD</span>
+        <br/>Compare: TBD
+        <br/>Tag: TBD
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>12</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Backup DB</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>13</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Deploy script migrates</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>14</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Kiểm tra table mới</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>15</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Social Listening API</td>
+      <td>Jenkins: <a href="https://jenkins.younetmedia.com/job/sl-api/">sl-api</a>
+        <br/>Repo: <a href="https://git.younetmedia.com/YNM/social-listening-api">social-listening-api</a>
+        <br/>Branch: <span style="color: rgb(51,51,51);">TBD</span>
+        <br/>Compare: TBD
+        <br/>Tag: TBD
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>16</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Deploy API</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>17</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Healthcheck</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>18</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Frontend (Studio)</td>
+      <td>Jenkins: <a href="https://jenkins.younetmedia.com/job/ynm-studio/">ynm-studio</a>
+        <br/>Repo: <a href="https://git.younetmedia.com/YNM/ynm-studio">ynm-studio</a>
+        <br/>Branch: <span style="color: rgb(51,51,51);">TBD</span>
+        <br/>Compare: TBD
+        <br/>Tag: TBD
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>19</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Deploy UI</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>20</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Kiểm tra route</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>21</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>socialheat</td>
+      <td>Jenkins: <a class="" href="https://jenkins.younetmedia.com/job/socialheat/">socialheat</a>
+        <br/>Repo: <a href="https://git.younetmedia.com/YNM/socialheat">socialheat</a>
+        <br/>Branch: <span style="color: rgb(51,51,51);">TBD</span>
+        <br/>Compare: TBD
+        <br/>Tag: TBD
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>22</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Deploy</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>23</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Kiểm tra</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>24</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>ynm-socialheat</td>
+      <td>Jenkins: <a href="https://jenkins.younetmedia.com/job/ynm-socialheat/">ynm-socialheat</a>
+        <br/>Repo: <a href="https://git.younetmedia.com/YNM-APP/ynm-socialheat">ynm-socialheat</a>
+        <br/>Branch: <span style="color: rgb(51,51,51);">TBD</span>
+        <br/>Compare: TBD
+        <br/>Tag: TBD</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>25</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Kiểm tra team data deploy</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>26</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Deploy</span>
+            </ac:task-body>
+</ac:task>
+<ac:task>
+<ac:task-id>27</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Kiểm tra</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>28</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>5. Post Deploy Verification</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>STT</th>
+      <th>Công việc</th>
+      <th>Trạng thái</th>
+      <th>Người phụ trách</th>
+      <th>Người hỗ trợ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Restart các service được triển khai: socialheat-api, sl-api và các worker/schedule liên quan</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>29</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Kiểm tra <strong>health status</strong> của tất cả pods/services và xác nhận không có restart bất thường</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>30</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Kiểm tra log service không có error bất thường sau triển khai</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>31</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Xác nhận migration topic neutral thay thế unrated hoạt động đúng</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>32</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>QC</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Xác nhận Share No Text_Owned Media cho current topic và System Trigger; kiểm tra cấu hình sentiment theo từng topic</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>33</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>QC</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Xác nhận Crisis New Workflow, AI Daily Auto Summarize và Push Notification hoạt động đúng yêu cầu</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>34</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>QC</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Xác nhận các field ai_spam, ai_attributes, ai_tags được gửi và xử lý đúng khi submit request</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>35</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>QC</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Thông báo cho team: "Release thành công"</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>36</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Release Owner</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>6. Rollback Plan</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>STT</th>
+      <th>Công việc</th>
+      <th>Trạng thái</th>
+      <th>Người phụ trách</th>
+      <th>Người hỗ trợ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Quyết định rollback (dựa trên error rate, backlog, QA report)</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>37</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>QC / Tech lead</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Rollback database (chạy down.sql hoặc restore snapshot nếu cần)</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>38</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Rollback ConfigMap/Secret về version cũ</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>39</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Xử lý dữ liệu phát sinh</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>40</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>DevOps</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Thông báo rollback status cho stakeholders</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>41</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Tech lead</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Xác nhận hệ thống đã về trạng thái ổn định</td>
+      <td>
+        <ac:task-list>
+<ac:task>
+<ac:task-id>42</ac:task-id>
+<ac:task-status>incomplete</ac:task-status>
+<ac:task-body>
+              <span class="placeholder-inline-tasks">Done</span>
+            </ac:task-body>
+</ac:task>
+</ac:task-list>
+      </td>
+      <td>Tech lead</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  <strong>7. Post Deploy Notes</strong>
+</p>
+<table class="wrapped">
+  <thead>
+    <tr>
+      <th>STT</th>
+      <th>Công việc</th>
+      <th>Ghi Chú</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Trạng thái deploy</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Thời gian triển khai</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Các service đã deploy</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Sự cố phát sinh</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Lesson learned</td>
+      <td>
+        <br/>
+      </td>
+    </tr>
+  </tbody>
+</table>
+<h3>Người liên hệ</h3>
+<ul>
+  <li>DevOps: Danhnt3</li>
+</ul>
+
