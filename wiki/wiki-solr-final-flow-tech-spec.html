@@ -1,0 +1,1220 @@
+<h1>APACHE SOLR - RESHARDING FINAL FLOW</h1>
+<h2>SPLIT SHARD &amp; REBALANCE LEADER — RF=2</h2>
+
+<ac:structured-macro ac:name="info" ac:schema-version="1" ac:macro-id="b5f45f0e-9a5e-4cc3-ae83-01ef881662f7">
+  <ac:rich-text-body>
+    <p><strong>Mục đích tài liệu:</strong> đặc tả implementation-level cho detector, split worker, leader rebalance, validation, recovery và cleanup parent shard của topic collection có replication factor thực tế bằng 2. Engineer có thể dùng tài liệu này làm contract để triển khai service và test.</p>
+    <p><strong>Source of truth:</strong> bốn hình trong <code>imgs/final-flow</code> là flow mới nhất. Các wiki cũ chỉ được dùng để tham khảo bối cảnh và response thực tế. Khi sơ đồ thiếu nhánh recovery hoặc validation, các rule an toàn trong tài liệu này được ưu tiên.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>1. Change log</h2>
+<table>
+  <tbody>
+    <tr><th>Version</th><th>Date</th><th>Change</th></tr>
+    <tr><td>1.0</td><td>2026-08-14</td><td>Tech spec đầu tiên cho final flow RF=2; chuẩn hóa checkpoint, sequential parent split, topology reconciliation, leader verification và parent retention 30 ngày.</td></tr>
+    <tr><td>1.1</td><td>2026-08-14</td><td>Đơn giản hóa state model; scheduler xử lý theo job/action status, Mongo evidence và actual Solr state. Bổ sung phần Tóm tắt và quyết định thiết kế.</td></tr>
+    <tr><td>1.2</td><td>2026-08-14</td><td>Rút gọn action state còn bốn giá trị; dùng intent/request evidence để phân biệt request chưa gửi, đã accepted hoặc đang chạy.</td></tr>
+    <tr><td>1.3</td><td>2026-08-14</td><td>Rút gọn Mongo về operational state tối thiểu; đổi blocking flag thành <code>blocksNextReshard</code>, dùng <code>actions[].parentDeletedAt</code> cho cleanup và áp dụng single-pod scheduler contract.</td></tr>
+  </tbody>
+</table>
+
+<h2>2. Tóm tắt và quyết định thiết kế</h2>
+
+<ac:structured-macro ac:name="info" ac:schema-version="1" ac:macro-id="6681d5f3-9700-4ae8-92a0-176f62111f50">
+  <ac:parameter ac:name="title">Tóm tắt và quyết định thiết kế</ac:parameter>
+  <ac:rich-text-body>
+    <p class="title conf-macro-render"><strong>Vấn đề &amp; Giải pháp</strong></p>
+
+    <h3>2.1 Vấn đề</h3>
+    <ul>
+      <li>Production có khoảng <code>10.472</code> collections.</li>
+      <li>Một số topic collection tăng lên hàng chục triệu documents nhưng chỉ có một hoặc ít active shards.</li>
+      <li>Một shard lớn tạo bottleneck cho query, indexing, recovery, disk I/O, leader workload và vận hành SolrCloud.</li>
+      <li>Application đang gọi trực tiếp endpoint <code>/solr/topic_xxx</code>; flow không thể đổi collection name, endpoint hoặc yêu cầu application migration.</li>
+      <li>Sau split, leader của nhiều child shard có thể tập trung trên cùng node và tạo hotspot.</li>
+      <li>Parent shard chuyển sang <code>INACTIVE</code> nhưng không nên bị xóa ngay vì cần retention và operator observation.</li>
+    </ul>
+
+    <h3>2.2 Mục tiêu</h3>
+    <ul>
+      <li>Tự động phát hiện collection vượt ngưỡng và tăng active shard in-place bằng Collections API <code>SPLITSHARD</code>.</li>
+      <li>Giữ nguyên collection name và endpoint hiện tại.</li>
+      <li>Không có planned read/write downtime; collection vẫn nhận write trong lúc split.</li>
+      <li>Giới hạn số collection split đồng thời và split tuần tự các initial parent trong cùng collection.</li>
+      <li>Theo dõi tiến độ bằng job status và per-parent action status.</li>
+      <li>Không duplicate <code>SPLITSHARD</code> khi HTTP outcome không chắc chắn hoặc scheduler tick chạy lại.</li>
+      <li>Với RF=2, chỉ ưu tiên trải leader bằng <code>preferredLeader</code> và <code>REBALANCELEADERS</code>; không move replica/data.</li>
+      <li>Validate topology, ranges, replicas, leaders và query trước khi mark <code>DONE</code>.</li>
+      <li>Giữ inactive parent 30 ngày rồi cleanup.</li>
+      <li>Cho phép scheduler tick sau tiếp tục xử lý dựa trên Mongo evidence và actual Solr state.</li>
+    </ul>
+
+    <h3>2.3 Giải pháp tổng quan</h3>
+
+    <h4>Detect Job — mỗi ngày lúc 00:00</h4>
+    <ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="eec17e27-d971-4a84-96fe-1204071708ee">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[CLUSTERSTATUS
+→ lọc collection healthy, compositeId, actual active RF=2
+→ lọc collection chưa có blocking job
+→ query total mentions
+→ tính target shard
+→ insert Mongo job status=NEW]]></ac:plain-text-body>
+    </ac:structured-macro>
+    <p>Detect Job chỉ phát hiện và tạo job; không gọi mutation Solr API.</p>
+
+    <h4>Split Shard Job — mỗi 30 giây</h4>
+    <ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="120688df-cf90-497c-a9a6-e6ef34be7925">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Đọc PENDING trước
+→ poll/reconcile request đang chạy
+
+Nếu còn concurrent slot
+→ lấy NEW job
+→ set PENDING
+→ build fixed parent actions
+
+Xử lý tuần tự từng parent
+→ SPLITSHARD
+→ REQUESTSTATUS
+→ validate parent/children/range/RF/query
+→ mark action COMPLETED
+
+Tất cả parent completed
+→ preferredLeader
+→ REBALANCELEADERS
+→ verify actual leader
+→ final validation
+→ mark DONE]]></ac:plain-text-body>
+    </ac:structured-macro>
+
+    <h4>Clear Parent Topic Job — mỗi tuần</h4>
+    <ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="786b79d1-7e93-4980-84f0-e0cd87658380">
+      <ac:parameter ac:name="language">text</ac:parameter>
+      <ac:plain-text-body><![CDATA[Đọc DONE job đã đủ retention 30 ngày
+→ precheck parent INACTIVE và children healthy
+→ DELETESHARD từng parent
+→ CLUSTERSTATUS verify parent absent
+→ mark COMPLETE]]></ac:plain-text-body>
+    </ac:structured-macro>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="warning" ac:schema-version="1" ac:macro-id="57da67c8-e1e9-41c2-9d6e-a5f798da67be">
+  <ac:parameter ac:name="title">Availability statement</ac:parameter>
+  <ac:rich-text-body>
+    <p>Flow không có planned downtime, nhưng <code>SPLITSHARD</code> với <code>splitMethod=rewrite</code> và leader rebalance có thể làm tăng CPU, disk I/O, query/update latency hoặc gây transient error. Không cam kết “zero downtime tuyệt đối”. Acceptance dựa trên staging/canary error budget.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>2.4 Bảng quyết định thiết kế</h3>
+<table>
+  <tbody>
+    <tr><th>Quyết định</th><th>Giá trị final flow</th><th>Lý do</th></tr>
+    <tr><td>Scheduler detect</td><td><code>00:00</code> mỗi ngày</td><td>Giảm tần suất quét toàn cluster.</td></tr>
+    <tr><td>Scheduler split</td><td>Mỗi <code>30 giây</code></td><td>Poll async request và xử lý job.</td></tr>
+    <tr><td>Scheduler cleanup</td><td>Mỗi tuần</td><td>Parent retention không cần polling thường xuyên.</td></tr>
+    <tr><td>Target shards</td><td><code>1 / 2 / 4 / 8</code></td><td>Tăng theo document threshold.</td></tr>
+    <tr><td>Max active shards</td><td><code>8</code></td><td>Giới hạn tải và topology growth.</td></tr>
+    <tr><td>Split strategy</td><td>Đi thẳng từ current đến target hợp lệ</td><td>Không bắt buộc chạy nhiều wave trung gian.</td></tr>
+    <tr><td>Parent processing</td><td>Tuần tự trong một collection</td><td>Giảm disk/CPU pressure.</td></tr>
+    <tr><td>Collection concurrency</td><td>Mặc định <code>5</code></td><td>Giới hạn số collection split cùng lúc.</td></tr>
+    <tr><td>Replication factor</td><td>Actual active RF=<code>2</code></td><td>Không chỉ dựa vào metadata <code>replicationFactor</code>.</td></tr>
+    <tr><td>Split method</td><td><code>rewrite</code></td><td>Final flow không dùng link method.</td></tr>
+    <tr><td>Async tracking</td><td>Stable request ID theo job/parent</td><td>Tránh duplicate submit.</td></tr>
+    <tr><td>Final-state option</td><td><code>waitForFinalState=true</code></td><td>Chờ affected replicas active; vẫn phải validate.</td></tr>
+    <tr><td>Leader handling</td><td><code>preferredLeader</code> + <code>REBALANCELEADERS</code></td><td>Không move data vật lý.</td></tr>
+    <tr><td>Parent retention</td><td><code>30 ngày</code></td><td>Cho phép observation trước cleanup.</td></tr>
+    <tr><td>Document count</td><td>Không yêu cầu before=after tuyệt đối</td><td>Collection vẫn nhận write.</td></tr>
+    <tr><td>Success definition</td><td>Actual topology/query validation</td><td>HTTP 200 hoặc Solr status 0 chưa đủ.</td></tr>
+  </tbody>
+</table>
+
+<h3>2.5 Ngoài phạm vi</h3>
+<p>RabbitMQ, RF=1, <code>MOVEREPLICA</code>, <code>ADDREPLICA</code>/<code>DELETEREPLICA</code>, alias migration, collection mới/versioning, <code>REINDEXCOLLECTION</code>, merge/downscale, custom ranges, split key và <code>splitByPrefix</code> không thuộc final flow này.</p>
+
+<h3>2.6 Design invariants</h3>
+<ol>
+  <li>Mỗi collection chỉ có tối đa một job đang chặn wave kế tiếp.</li>
+  <li>Tối đa 5 collection ở main split pipeline cùng lúc; một collection chỉ split một parent tại một thời điểm.</li>
+  <li>Trước mọi mutation API phải persist intent, expected topology và stable request ID nếu API hỗ trợ async.</li>
+  <li>HTTP 2xx và <code>responseHeader.status=0</code> không phải business success. Chỉ topology/query validation mới cho phép hoàn tất action/job.</li>
+  <li><code>REQUESTSTATUS=completed</code> không đồng nghĩa action hoặc job đã hoàn tất.</li>
+  <li>Không yêu cầu document count trước và sau tuyệt đối bằng nhau khi collection vẫn nhận write.</li>
+  <li>Parent chỉ được xóa sau retention và phải verify parent đã biến mất trước khi mark <code>COMPLETE</code>.</li>
+</ol>
+
+<h2>3. Flow diagrams</h2>
+
+<h3>3.1 Detect Job</h3>
+<ac:image ac:align="center" ac:layout="center" ac:original-height="3116" ac:original-width="6338">
+  <ri:attachment ri:filename="Detect Job.png"/>
+</ac:image>
+
+<h3>3.2 Split Shard Job</h3>
+<ac:image ac:align="center" ac:layout="center" ac:original-height="3647" ac:original-width="10738">
+  <ri:attachment ri:filename="Split Shard Job.png"/>
+</ac:image>
+
+<h3>3.3 Clear Parent Topic Job</h3>
+<ac:image ac:align="center" ac:layout="center" ac:original-height="1982" ac:original-width="4054">
+  <ri:attachment ri:filename="Clear Parent Topic Job.png"/>
+</ac:image>
+
+<h3>3.4 State Of Job</h3>
+<ac:image ac:align="center" ac:layout="center" ac:original-height="1504" ac:original-width="4538">
+  <ri:attachment ri:filename="State Of Job.png"/>
+</ac:image>
+
+<h2>4. Configuration contract</h2>
+<table>
+  <tbody>
+    <tr><th>Config</th><th>Default</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>RESHARD_DETECT_CRON</code></td><td><code>0 0 * * *</code></td><td>Detect lúc 00:00 mỗi ngày.</td></tr>
+    <tr><td><code>RESHARD_TIMEZONE</code></td><td><code>Asia/Ho_Chi_Minh</code></td><td>Timezone scheduler và audit timestamp.</td></tr>
+    <tr><td><code>RESHARD_SPLIT_POLL_INTERVAL</code></td><td><code>30s</code></td><td>Chu kỳ split worker.</td></tr>
+    <tr><td><code>RESHARD_CLEAR_PARENT_CRON</code></td><td><code>weekly</code></td><td>Chu kỳ cleanup parent.</td></tr>
+    <tr><td><code>RESHARD_MAX_CONCURRENT_COLLECTIONS</code></td><td><code>5</code></td><td>Số job <code>PENDING</code> tối đa trong single-pod scheduler.</td></tr>
+    <tr><td><code>RESHARD_THRESHOLD_2</code></td><td><code>40000000</code></td><td>Từ ngưỡng này target 2 shard.</td></tr>
+    <tr><td><code>RESHARD_THRESHOLD_4</code></td><td><code>80000000</code></td><td>Từ ngưỡng này target 4 shard.</td></tr>
+    <tr><td><code>RESHARD_THRESHOLD_8</code></td><td><code>160000000</code></td><td>Từ ngưỡng này target 8 shard.</td></tr>
+    <tr><td><code>RESHARD_MAX_ACTIVE_SHARDS</code></td><td><code>8</code></td><td>Không tự tăng vượt quá 8 active shard.</td></tr>
+    <tr><td><code>RESHARD_PARENT_RETENTION</code></td><td><code>30d</code></td><td>Thời gian giữ inactive parent tính từ <code>doneAt</code>.</td></tr>
+    <tr><td><code>RESHARD_MONGO_TOPIC_CHUNK_SIZE</code></td><td><code>1000</code></td><td>Số collection name tối đa trong một Mongo query.</td></tr>
+    <tr><td><code>SOLR_CONNECT_TIMEOUT</code></td><td>Environment-specific</td><td>HTTP connect timeout.</td></tr>
+    <tr><td><code>SOLR_READ_TIMEOUT</code></td><td>Environment-specific</td><td>Read timeout; mutation timeout luôn phải reconcile.</td></tr>
+    <tr><td><code>SOLR_MAX_RESPONSE_SIZE</code></td><td>Environment-specific</td><td>Chặn response quá lớn.</td></tr>
+  </tbody>
+</table>
+
+<h3>4.1 Target shard calculation</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="90445d69-e42d-47f2-86d0-c43e6bfb8002">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[docs < 40M          -> targetActiveShards = 1
+40M <= docs < 80M   -> targetActiveShards = 2
+80M <= docs < 160M  -> targetActiveShards = 4
+docs >= 160M        -> targetActiveShards = 8
+
+eligible only when:
+  targetActiveShards > currentActiveShards
+  targetActiveShards % currentActiveShards == 0
+  numSubShards = target/current
+  numSubShards in {2, 4, 8}
+
+currentActiveShards and numSubShards are calculation variables;
+Mongo only persists targetActiveShards and actions[].numSubShards.]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>5. Job status và scheduled processing rules</h2>
+<ac:structured-macro ac:name="warning" ac:schema-version="1" ac:macro-id="0d627e2f-6af6-4f35-bbb4-9769a0a28915">
+  <ac:parameter ac:name="title">Single-pod contract</ac:parameter>
+  <ac:rich-text-body>
+    <p>Thiết kế rút gọn giả định chỉ có một active scheduler pod. Deployment dùng <code>replicas=1</code> và strategy <code>Recreate</code>, hoặc RollingUpdate với <code>maxSurge=0</code>/<code>maxUnavailable=1</code>, để pod cũ và mới không cùng chạy scheduler. Mỗi scheduled job phải có local non-overlap guard. Nếu scale nhiều pod, phải bổ sung distributed lease/fencing trước khi scale.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>5.1 Hai lớp trạng thái</h3>
+<p>Final flow chỉ dùng job status và per-parent action status. Mỗi scheduler tick quyết định operation tiếp theo từ persisted evidence và actual Solr state.</p>
+<table>
+  <tbody>
+    <tr><th>Lớp</th><th>Enum</th><th>Trách nhiệm</th></tr>
+    <tr><td>Job status</td><td><code>NEW → PENDING → DONE → COMPLETE</code>, hoặc <code>PENDING → FAILED</code></td><td>Business lifecycle và scheduler selection.</td></tr>
+    <tr><td>Per-parent action</td><td><code>NOT_STARTED</code>, <code>RUNNING</code>, <code>COMPLETED</code>, <code>FAILED</code></td><td>Tiến độ từng initial active parent.</td></tr>
+  </tbody>
+</table>
+
+<h3>5.2 Job status contract</h3>
+<table>
+  <tbody>
+    <tr><th>Status</th><th>Ý nghĩa</th><th>Scheduled job được phép xử lý</th></tr>
+    <tr><td><code>NEW</code></td><td>Detect Job đã tạo job; chưa được Split Job claim.</td><td>Split Job kiểm tra số PENDING, atomic claim NEW → PENDING rồi build actions.</td></tr>
+    <tr><td><code>PENDING</code></td><td>Đang split parent, validate hoặc xử lý leader.</td><td>Split Job đọc action/evidence và actual Solr state để tiếp tục.</td></tr>
+    <tr><td><code>DONE</code></td><td>Main split pipeline đã hoàn tất; đang chờ retention/cleanup.</td><td>Clear Parent Job chỉ xử lý khi <code>retentionUntil &lt;= now</code>.</td></tr>
+    <tr><td><code>COMPLETE</code></td><td>Mọi inactive parent đã absent và final query pass.</td><td>Terminal; không gọi Solr API.</td></tr>
+    <tr><td><code>FAILED</code></td><td>Structural/terminal failure có evidence.</td><td>Terminal cho automation; chỉ operator/recovery workflow.</td></tr>
+  </tbody>
+</table>
+
+<h3>5.3 Per-parent action status contract</h3>
+<table>
+  <tbody>
+    <tr><th>Action status</th><th>Khi nào set?</th><th>Tick sau xử lý thế nào?</th></tr>
+    <tr><td><code>NOT_STARTED</code></td><td>Fixed action plan vừa được tạo; chưa persist split intent.</td><td>Persist stable request ID/expected topology, set RUNNING rồi mới gọi SPLITSHARD.</td></tr>
+    <tr><td><code>RUNNING</code></td><td>Intent/request ID đã persist và action chưa validation hoàn tất. HTTP có thể chưa được gửi, đã accepted hoặc REQUESTSTATUS đang submitted/running.</td><td>REQUESTSTATUS với ID cũ; nếu failed/notfound hoặc HTTP outcome không chắc chắn thì reconcile CLUSTERSTATUS trước khi retry.</td></tr>
+    <tr><td><code>COMPLETED</code></td><td>Solr completed và topology/range/RF/query validation đã pass.</td><td>Bỏ qua parent này; chọn action NOT_STARTED kế tiếp hoặc xử lý leader.</td></tr>
+    <tr><td><code>FAILED</code></td><td>Reconciliation xác nhận structural failure.</td><td>Mark job FAILED; không tự động chạy mutation tiếp.</td></tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:name="note" ac:schema-version="1" ac:macro-id="668993c6-b77e-4a38-a154-72ee94e64c2d">
+  <ac:rich-text-body>
+    <p><code>RUNNING</code> bắt đầu từ lúc split intent, <code>startedAt</code> và request ID đã được Mongo commit; không đảm bảo Solr đã nhận HTTP request. Request/response evidence chi tiết nằm trong structured logs. Tick sau luôn hỏi REQUESTSTATUS/topology trước khi quyết định submit lại.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h3>5.4 Processing rule của từng scheduled job</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="a676545c-4cdb-4a0d-8ca2-2367dac66366">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[Detect Job — daily 00:00
+  eligible collection -> INSERT status=NEW
+
+Split Shard Job — every 30 seconds
+  process PENDING first
+    find first action != COMPLETED
+      NOT_STARTED -> persist intent/requestId, set RUNNING, call SPLITSHARD
+      RUNNING     -> REQUESTSTATUS; reconcile topology when failed/notfound/ambiguous
+      Solr completed    -> validate; only then set action COMPLETED
+      action FAILED     -> set job FAILED
+    all actions COMPLETED
+      build/reuse leaderTargets
+      apply preferredLeader and rebalance when actual topology requires it
+      final validation pass -> status=DONE
+
+  after PENDING, if slot available
+    claim NEW -> status=PENDING -> build fixed actions[]
+
+Clear Parent Topic Job — weekly
+  select status=DONE and retentionUntil<=now
+  verify/delete each action where parentDeletedAt is null
+  all parents absent and final query pass -> status=COMPLETE, blocksNextReshard=false
+
+At every tick:
+  actual REQUESTSTATUS/CLUSTERSTATUS takes precedence over an ambiguous HTTP outcome.]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>5.5 Conditional update</h3>
+<p>Mọi job/action transition vẫn dùng compare-and-set theo job/action status. Nếu <code>modifiedCount=0</code>, state đã thay đổi và scheduler dừng trước side effect kế tiếp.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="a0ba93ae-6a19-441e-827e-1d7904b98cf2">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[db.resharding_jobs.updateOne(
+  {
+    _id: jobId,
+    status: "PENDING",
+    actions: {
+      $elemMatch: {
+        parentShard: parentShard,
+        status: expectedActionStatus
+      }
+    }
+  },
+  {
+    $set: {
+      "actions.$[action].status": nextActionStatus,
+      updatedAt: now
+    }
+  },
+  {
+    arrayFilters: [
+      {
+        "action.parentShard": parentShard,
+        "action.status": expectedActionStatus
+      }
+    ]
+  }
+)]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>5.6 Tick-boundary continuation</h3>
+<ul>
+  <li>Intent đã persist nhưng chưa biết HTTP tới Solr: dùng persisted request ID để query REQUESTSTATUS và CLUSTERSTATUS.</li>
+  <li>Action RUNNING: chỉ dùng persisted request ID; không tạo ID mới và không chuyển parent.</li>
+  <li>REQUESTSTATUS completed: chạy lại read-only validation; chưa mark action completed.</li>
+  <li>Action hiện tại đã COMPLETED: chọn action NOT_STARTED tiếp theo từ fixed plan.</li>
+  <li>Leader mutation bị ngắt giữa chừng: đọc actual property/leader trước khi gọi lại.</li>
+  <li>Parent delete outcome không chắc chắn: đọc CLUSTERSTATUS; parent absent là idempotent success.</li>
+</ul>
+
+<h2>6. Mongo persistence contract</h2>
+
+<h3>6.1 Job document</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="37786ac8-d15d-4bbf-a576-4572975a4461">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "_id": "66b8...",
+  "collection": "topic_100001",
+  "status": "PENDING",
+  "blocksNextReshard": true,
+  "detectedDocCount": 100500000,
+  "targetActiveShards": 4,
+  "actions": [
+    {
+      "parentShard": "shard1",
+      "parentRange": "80000000-ffffffff",
+      "numSubShards": 2,
+      "expectedChildren": ["shard1_0", "shard1_1"],
+      "requestId": "66b8:split:shard1",
+      "status": "RUNNING",
+      "startedAt": "2026-08-14T01:00:00Z",
+      "completedAt": null,
+      "parentDeletedAt": null
+    }
+  ],
+  "leaderTargets": null,
+  "asyncStatusCleanedAt": null,
+  "retryCount": 0,
+  "nextRetryAt": "2026-08-14T01:00:30Z",
+  "lastError": null,
+  "createdAt": "2026-08-14T00:00:00Z",
+  "updatedAt": "2026-08-14T01:00:30Z",
+  "doneAt": null,
+  "retentionUntil": null,
+  "completedAt": null
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>6.2 Field cần giữ</h3>
+<table>
+  <tbody>
+    <tr><th>Field</th><th>Công dụng</th></tr>
+    <tr><td><code>_id</code></td><td>Job ID và thành phần tạo stable Solr request ID.</td></tr>
+    <tr><td><code>collection</code></td><td>Collection cần reshard.</td></tr>
+    <tr><td><code>status</code></td><td>Business lifecycle: NEW, PENDING, DONE, COMPLETE, FAILED.</td></tr>
+    <tr><td><code>blocksNextReshard</code></td><td>Ngăn Detect Job tạo lần reshard tiếp theo khi job hiện tại chưa cleanup hoặc chưa được operator xử lý.</td></tr>
+    <tr><td><code>detectedDocCount</code></td><td>Count dùng để quyết định target tại thời điểm detect.</td></tr>
+    <tr><td><code>targetActiveShards</code></td><td>Điều kiện final validation.</td></tr>
+    <tr><td><code>actions[]</code></td><td>Fixed plan của initial parent shards.</td></tr>
+    <tr><td><code>parentShard</code>, <code>parentRange</code></td><td>Xác định initial parent; range là inclusive hash range lấy từ CLUSTERSTATUS để validate union của child ranges.</td></tr>
+    <tr><td><code>numSubShards</code>, <code>expectedChildren</code></td><td>SPLITSHARD parameter và reconciliation evidence.</td></tr>
+    <tr><td><code>requestId</code></td><td>REQUESTSTATUS và duplicate-submit protection.</td></tr>
+    <tr><td><code>actions[].status</code></td><td>NOT_STARTED, RUNNING, COMPLETED hoặc FAILED.</td></tr>
+    <tr><td><code>actions[].startedAt</code></td><td>Thời điểm Mongo commit split intent và chuyển action sang RUNNING; không khẳng định Solr đã nhận request.</td></tr>
+    <tr><td><code>actions[].completedAt</code></td><td>Chỉ set sau khi REQUESTSTATUS/topology cho thấy split hoàn tất và validation parent pass.</td></tr>
+    <tr><td><code>parentDeletedAt</code></td><td>Cleanup progress của parent; thay cho một inactive-parent array riêng.</td></tr>
+    <tr><td><code>leaderTargets</code></td><td>Stable preferred-leader decisions giữa các scheduler tick; mỗi phần tử tối thiểu có <code>shard</code> và <code>replica</code>.</td></tr>
+    <tr><td><code>asyncStatusCleanedAt</code></td><td>Cho phép retry DELETESTATUS mà không cần boolean riêng.</td></tr>
+    <tr><td><code>retryCount</code>, <code>nextRetryAt</code>, <code>lastError</code></td><td>Transient backoff và lỗi hiện tại; reset count/error khi operation kế tiếp pass.</td></tr>
+    <tr><td><code>createdAt</code>, <code>updatedAt</code></td><td>Audit thời điểm tạo và lần thay đổi operational state gần nhất.</td></tr>
+    <tr><td><code>doneAt</code>, <code>retentionUntil</code></td><td>Thời điểm main pipeline pass và thời điểm sớm nhất được cleanup parent.</td></tr>
+    <tr><td>Job-level <code>completedAt</code></td><td>Chỉ set khi mọi parent absent, final query pass và job chuyển COMPLETE.</td></tr>
+  </tbody>
+</table>
+
+<h4>Field lifecycle tối thiểu</h4>
+<table>
+  <tbody>
+    <tr><th>Lifecycle point</th><th>Field bắt buộc</th></tr>
+    <tr><td>NEW</td><td><code>actions=[]</code>, <code>leaderTargets=null</code>, <code>retryCount=0</code>, <code>nextRetryAt=createdAt</code>.</td></tr>
+    <tr><td>Action NOT_STARTED</td><td>Parent/range/sub-shard/expected-child plan tồn tại; <code>requestId</code> và <code>startedAt</code> có thể chưa tồn tại.</td></tr>
+    <tr><td>Action RUNNING</td><td><code>requestId</code> và <code>startedAt</code> bắt buộc; scheduler luôn dùng lại ID này.</td></tr>
+    <tr><td>Action COMPLETED</td><td><code>completedAt</code> bắt buộc; <code>parentDeletedAt</code> vẫn null cho tới cleanup.</td></tr>
+    <tr><td>DONE</td><td><code>doneAt</code>, <code>retentionUntil</code> bắt buộc; <code>blocksNextReshard=true</code>.</td></tr>
+    <tr><td>COMPLETE</td><td>Mọi action có <code>parentDeletedAt</code>; job có <code>completedAt</code>; <code>blocksNextReshard=false</code>.</td></tr>
+  </tbody>
+</table>
+
+<h4>blocksNextReshard contract</h4>
+<table>
+  <tbody>
+    <tr><th>Job status</th><th>blocksNextReshard</th><th>Lý do</th></tr>
+    <tr><td>NEW</td><td>true</td><td>Job đang chờ xử lý.</td></tr>
+    <tr><td>PENDING</td><td>true</td><td>Main pipeline chưa hoàn tất.</td></tr>
+    <tr><td>DONE</td><td>true</td><td>Inactive parents chưa cleanup.</td></tr>
+    <tr><td>FAILED</td><td>true</td><td>Topology có thể chưa an toàn cho lần reshard mới.</td></tr>
+    <tr><td>COMPLETE</td><td>false</td><td>Main pipeline và cleanup đã verify.</td></tr>
+  </tbody>
+</table>
+<p>Operator chỉ được manual set <code>blocksNextReshard=false</code> sau khi xác nhận topology an toàn. Historical jobs có value false vẫn được giữ; partial unique index chỉ chặn document có value true.</p>
+
+<h4>leaderTargets contract</h4>
+<ul>
+  <li>Field missing hoặc <code>null</code>: chưa tính leader target.</li>
+  <li><code>[]</code>: đã tính và actual distribution không cần rebalance.</li>
+  <li>Có phần tử: verify/apply đúng target đã persist trước khi final validation.</li>
+</ul>
+
+<h3>6.3 Field đã loại hoặc gộp</h3>
+<table>
+  <tbody>
+    <tr><th>Field cũ</th><th>Xử lý và lý do</th></tr>
+    <tr><td><code>blocksNextWave</code></td><td>Đổi thành <code>blocksNextReshard</code> để đúng final-flow terminology.</td></tr>
+    <tr><td><code>schemaVersion</code></td><td>Xóa; runtime hiện tại chưa có schema migration.</td></tr>
+    <tr><td><code>confirmedDocCount</code></td><td>Xóa; validation query/log giữ evidence cần thiết.</td></tr>
+    <tr><td><code>currentActiveShards</code>, <code>numSubShardsPerParent</code></td><td>Xóa khỏi Mongo; suy ra khi build actions và lưu <code>numSubShards</code> theo action.</td></tr>
+    <tr><td><code>replicationFactor</code></td><td>Xóa khỏi Mongo; RF=2 là eligibility rule.</td></tr>
+    <tr><td><code>topologyFingerprint</code></td><td>Xóa khỏi Mongo; scheduler đọc actual CLUSTERSTATUS.</td></tr>
+    <tr><td><code>currentActionIndex</code></td><td>Xóa; chọn action đầu tiên chưa COMPLETED.</td></tr>
+    <tr><td><code>intentPersistedAt</code></td><td>Đổi thành <code>startedAt</code>.</td></tr>
+    <tr><td><code>acceptedAt</code>, <code>lastRequestState</code>, <code>lastPolledAt</code></td><td>Xóa; REQUESTSTATUS là authoritative, history nằm trong logs.</td></tr>
+    <tr><td><code>validatedAt</code>, <code>resultSummary</code></td><td>Xóa; action chỉ COMPLETED sau validation, detail nằm trong logs.</td></tr>
+    <tr><td><code>leaderPlan</code> evidence fields</td><td>Xóa; chỉ giữ stable <code>leaderTargets</code>.</td></tr>
+    <tr><td><code>finalValidatedAt</code></td><td>Xóa; DONE đã bao hàm final validation.</td></tr>
+    <tr><td><code>inactiveParents[]</code></td><td>Xóa; dùng <code>actions[].parentDeletedAt</code>.</td></tr>
+    <tr><td><code>requestStatusesCleaned</code></td><td>Đổi thành một timestamp <code>asyncStatusCleanedAt</code>.</td></tr>
+    <tr><td><code>runningSlotHeld</code>, lock owner/expiry/version</td><td>Xóa theo single-pod scheduler contract.</td></tr>
+  </tbody>
+</table>
+
+<h3>6.4 Required indexes</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="f049d227-a20f-4da0-ae38-b1fd5e4326e1">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[db.resharding_jobs.createIndex(
+  { collection: 1 },
+  {
+    name: "uniq_blocking_reshard_per_collection",
+    unique: true,
+    partialFilterExpression: { blocksNextReshard: true }
+  }
+)
+
+db.resharding_jobs.createIndex(
+  { status: 1, nextRetryAt: 1 },
+  { name: "worker_pickup" }
+)
+
+db.resharding_jobs.createIndex(
+  { status: 1, retentionUntil: 1 },
+  { name: "parent_cleanup" }
+)
+
+db.resharding_jobs.createIndex(
+  { collection: 1, createdAt: -1 },
+  { name: "collection_history" }
+)
+
+db.resharding_jobs.createIndex(
+  { "actions.requestId": 1 },
+  { name: "uniq_split_request_id", unique: true, sparse: true }
+)]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>Duplicate key ở index blocking có nghĩa collection đã có một job active/DONE chưa cleanup: không retry insert, log <code>ALREADY_HAS_BLOCKING_JOB</code> và skip.</p>
+
+<h3>6.5 Checkpoint around mutation</h3>
+<table>
+  <tbody>
+    <tr><th>Thời điểm</th><th>Bắt buộc persist</th></tr>
+    <tr><td>Trước <code>SPLITSHARD</code></td><td>Set action <code>RUNNING</code>, stable <code>requestId</code>, expected topology và <code>startedAt</code>; Mongo commit thành công trước HTTP.</td></tr>
+    <tr><td>Trước leader mutation</td><td>Persist stable <code>leaderTargets</code>. Không cần lưu từng HTTP attempt trong Mongo.</td></tr>
+    <tr><td>Sau HTTP response</td><td>Ghi HTTP/Solr status và bounded response vào structured logs; Mongo chỉ cập nhật retry fields khi cần.</td></tr>
+    <tr><td>Sau split validation</td><td>Set action <code>COMPLETED</code>, <code>completedAt</code> và <code>updatedAt</code>; counts/ranges/topology evidence nằm trong structured logs.</td></tr>
+  </tbody>
+</table>
+
+<h2>7. Detect Job — step-by-step</h2>
+
+<h3>7.1 Timer — 00:00 per day</h3>
+<p><strong>Mục đích:</strong> tạo một detect run hằng ngày trên single active scheduler pod.</p>
+<p><strong>Input:</strong> cron và timezone. <strong>Precondition:</strong> Mongo reachable và local non-overlap guard acquired. Nếu detect run trước trong cùng process chưa kết thúc thì skip tick mới, log <code>DETECT_TICK_OVERLAP_SKIPPED</code>.</p>
+<p><strong>Success:</strong> ghi structured log với detectRunId/startedAt. Không persist scheduler ownership trong resharding job document.</p>
+<p><strong>Metric:</strong> <code>reshard_detect_runs_total{result}</code>, <code>reshard_detect_duration_seconds</code>.</p>
+
+<h3>7.2 Get List Collection And Num Shards On Solr</h3>
+<p><strong>Mục đích:</strong> lấy authoritative cluster state và active topology. Detect không tạo job từ cached/partial response.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="9133d573-21e2-4533-9120-062db1b8f917">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=CLUSTERSTATUS&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>'
+
+# Query one collection
+curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=CLUSTERSTATUS&collection=topic_100001&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>action</code></td><td>Yes</td><td><code>CLUSTERSTATUS</code></td><td>Lấy cluster state.</td></tr>
+    <tr><td><code>collection</code></td><td>No</td><td><code>topic_100001</code></td><td>Giới hạn một collection.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td><code>json</code></td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<p><strong>Success response rút gọn:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="ecf0726a-e367-4fa0-8977-006baf2997a0">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 0, "QTime": 934 },
+  "cluster": {
+    "collections": {
+      "topic_100001": {
+        "configName": "topic_v3",
+        "replicationFactor": 2,
+        "router": { "name": "compositeId", "field": null },
+        "health": "GREEN",
+        "shards": {
+          "shard1": {
+            "range": "80000000-7fffffff",
+            "state": "active",
+            "health": "GREEN",
+            "replicas": {
+              "core_node1": {
+                "core": "topic_100001_shard1_replica_n1",
+                "node_name": "solr9-testing1.ynm.local:8985_solr",
+                "type": "NRT",
+                "state": "active",
+                "leader": "true",
+                "base_url": "http://solr9-testing1.ynm.local:8985/solr"
+              },
+              "core_node2": {
+                "core": "topic_100001_shard1_replica_n2",
+                "node_name": "solr9-testing2.ynm.local:8985_solr",
+                "type": "NRT",
+                "state": "active",
+                "base_url": "http://solr9-testing2.ynm.local:8985/solr"
+              }
+            }
+          }
+        }
+      }
+    },
+    "live_nodes": [
+      "solr9-testing1.ynm.local:8985_solr",
+      "solr9-testing2.ynm.local:8985_solr"
+    ]
+  }
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Failed response mẫu:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="1057faba-6a80-4bec-b65d-0580eef20082">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 500, "QTime": 3 },
+  "error": {
+    "metadata": ["error-class", "org.apache.solr.common.SolrException"],
+    "msg": "Unable to read cluster state",
+    "code": 500
+  }
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Collection not found:</strong> tùy Solr version có thể trả error hoặc status 0 nhưng key collection không tồn tại trong <code>cluster.collections</code>. Parser phải coi cả hai là <code>COLLECTION_NOT_FOUND</code>, không dereference null và không tạo job.</p>
+<p><strong>Fields phải parse:</strong> <code>responseHeader.status</code>, <code>cluster.live_nodes</code>; và cho mỗi collection: <code>replicationFactor</code>, <code>router.name</code>, <code>health</code>, <code>shards.*.state</code>, <code>range</code>, <code>replicas.*.state</code>, <code>type</code>, <code>leader</code>, <code>node_name</code>, <code>core</code>, <code>base_url</code>.</p>
+<p><strong>Active shard calculation:</strong> chỉ đếm shard có <code>state=active</code>. Không dùng <code>Object.keys(collection.shards).length</code> vì object còn chứa inactive parent.</p>
+<p><strong>Pass:</strong> status 0, health GREEN, router <code>compositeId</code>, replica/leader/live-node validation pass. <strong>Failure:</strong> timeout/5xx abort cả detect run và alert; invalid JSON/schema log <code>CLUSTERSTATUS_SCHEMA_INVALID</code>; không insert job từ partial cluster response.</p>
+
+<h3>7.3 Filter Collections With RF ACTIVE = 2</h3>
+<p><strong>Mục đích:</strong> chỉ chọn topology RF=2 thực tế, không tin riêng metadata <code>replicationFactor</code>.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="e0b2d86f-aa3c-486c-9121-8493d7982e04">
+  <ac:parameter ac:name="language">text</ac:parameter>
+  <ac:plain-text-body><![CDATA[for every active shard:
+  actualActiveRF = count(replica.state == "active")
+  pass when:
+    actualActiveRF == 2
+    exactlyOneLeader == true
+    allReplicaNodesLive == true]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Reject codes:</strong> <code>RF_NOT_2</code>, <code>REPLICA_NOT_ACTIVE</code>, <code>LEADER_MISSING</code>, <code>MULTIPLE_LEADERS</code>, <code>NODE_NOT_LIVE</code>, <code>COLLECTION_NOT_GREEN</code>, <code>UNSUPPORTED_ROUTER</code>, <code>TRANSITIONAL_TOPOLOGY</code>.</p>
+<p><strong>Next:</strong> chỉ collection pass toàn bộ active shards mới được đưa vào Mongo availability query.</p>
+
+<h3>7.4 Get Valid Topic For Resharding</h3>
+<p><strong>Mục đích:</strong> loại collection đang có blocking job, inactive parent chưa cleanup hoặc vừa split trong vòng 30 ngày.</p>
+<p><strong>Mongo input:</strong> collection names chia chunk tối đa 1000. Collection available khi không tồn tại resharding job có <code>blocksNextReshard=true</code>. DONE/FAILED vẫn block; COMPLETE có value false nên không chặn lần reshard sau.</p>
+<p><strong>Idempotency:</strong> partial unique index ở mục 6 bảo vệ race. Duplicate key là skip, không phải failure. <strong>Log/metric:</strong> <code>ALREADY_HAS_BLOCKING_JOB</code>, <code>reshard_detect_candidates_total{reason}</code>.</p>
+
+<h3>7.5 Has List Available?</h3>
+<p>Nếu danh sách rỗng: log <code>availableCount=0</code>, mark detect run success và kết thúc. Nếu có: tiếp tục lấy count. Node này không mutate Mongo job và không gọi Solr mutation.</p>
+
+<h3>7.6 Get Total Mentions For Topics</h3>
+<p><strong>Mục đích:</strong> lấy exact-enough collection-level count để chọn target. Query phải yêu cầu ZK connection và không chấp nhận partial result.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="f06775c2-d22c-455f-ae91-b9421ead163d">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/topic_100001/select?q=*:*&rows=0&wt=json&shards.tolerant=requireZkConnected' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>q</code></td><td>Yes trong flow</td><td><code>*:*</code></td><td>Đếm toàn bộ documents nhìn thấy qua search.</td></tr>
+    <tr><td><code>rows</code></td><td>Yes trong flow</td><td><code>0</code></td><td>Không trả document payload.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td><code>json</code></td><td>JSON response.</td></tr>
+    <tr><td><code>shards.tolerant</code></td><td>Yes trong flow</td><td><code>requireZkConnected</code></td><td>Không chấp nhận kết quả khi coordinator mất ZK connection.</td></tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="137068f3-af42-4432-a095-b2a0be40c121">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 0, "QTime": 25, "zkConnected": true },
+  "response": {
+    "numFound": 100500000,
+    "start": 0,
+    "numFoundExact": true,
+    "docs": []
+  }
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Failed/partial response mẫu:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="54ec8baa-dc85-475c-9490-f0469486dd68">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": {
+    "status": 0,
+    "QTime": 30000,
+    "zkConnected": false,
+    "partialResults": true
+  },
+  "response": { "numFound": 75000000, "start": 0, "docs": [] }
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Parse:</strong> <code>responseHeader.status</code>, <code>responseHeader.zkConnected</code>, top-level/header <code>partialResults</code> nếu có, <code>response.numFound</code>, <code>response.numFoundExact</code>. <strong>Pass:</strong> status 0, ZK connected, no partial result, <code>numFoundExact != false</code>. Timeout, disconnected ZK hoặc partial result làm candidate bị skip trong run này; không dùng count đó để chọn target.</p>
+
+<h3>7.7 Has Enough Shards?</h3>
+<p><strong>Input:</strong> exact count, active shard count, thresholds. <strong>Operation:</strong> áp dụng algorithm mục 4.1. Nếu target không lớn hơn current thì skip với reason <code>ENOUGH_ACTIVE_SHARDS</code>. Nếu ratio invalid hoặc vượt max thì log <code>INVALID_SPLIT_TARGET</code>, không insert.</p>
+<p><strong>Calculation output mẫu:</strong> <code>{currentActiveShards:2, targetActiveShards:4, numSubShards:2}</code>. Mongo chỉ persist target; Split Job lưu numSubShards theo từng action.</p>
+
+<h3>7.8 Insert New Status To DB</h3>
+<p><strong>Mục đích:</strong> tạo durable business job, chưa gọi Solr.</p>
+<p><strong>Mongo insert:</strong> <code>collection</code>, <code>status=NEW</code>, <code>blocksNextReshard=true</code>, detected count, target active shards, <code>actions=[]</code>, <code>leaderTargets=null</code>, retry defaults và timestamps.</p>
+<p><strong>Rule:</strong> detector không snapshot parent plan chính thức và không tự đoán request ID; worker sẽ đọc lại CLUSTERSTATUS sau khi claim. <strong>Success:</strong> insert acknowledged. <strong>Failure:</strong> duplicate key skip; other Mongo failure abort detect run and alert. <strong>Next:</strong> split worker có thể claim job.</p>
+
+<h2>8. Split Shard Job — step-by-step</h2>
+
+<h3>8.1 Get List Job Status</h3>
+<p>Mỗi 30 giây worker lấy hai tập: <code>running = status PENDING and nextRetryAt &lt;= now</code>, <code>available = status NEW</code>. Worker poll/recover PENDING trước rồi mới admit NEW để job đang chạy không bị starvation.</p>
+
+<h3>8.2 Reached Concurrent Limit?</h3>
+<p><strong>Limit:</strong> mặc định 5 running collections. Vì chỉ có một non-overlapping Split scheduler, worker đếm <code>status=PENDING</code>; nếu count nhỏ hơn 5 mới claim NEW. PENDING jobs luôn được xử lý trước admission.</p>
+<p>Nếu đã đủ limit: chỉ poll/reconcile PENDING. Nếu còn capacity và có NEW: atomic update đúng một job từ NEW → PENDING. Không dùng global semaphore/control document trong single-pod design.</p>
+<p><strong>Metrics:</strong> <code>reshard_running_collections</code>, <code>reshard_job_admission_total{result}</code>. DONE/FAILED không còn được tính trong PENDING count.</p>
+
+<h3>8.3 Claim NEW / Set PENDING</h3>
+<p><strong>Atomic transition:</strong> update với filter <code>_id + status=NEW</code>, set <code>status=PENDING</code> và <code>updatedAt=now</code>. Nếu modifiedCount bằng 0 thì skip. Sau đó gọi CLUSTERSTATUS lại và persist fixed <code>actions[]</code>.</p>
+<p>Nếu pod dừng sau khi set PENDING nhưng trước khi build plan, tick sau thấy <code>actions=[]</code> và build plan. Nếu collection không còn healthy/eligible hoặc topology không tương thích, ghi <code>status=FAILED</code>, giữ <code>blocksNextReshard=true</code> và chưa gọi SPLITSHARD.</p>
+
+<h3>8.4 Build Parent Actions</h3>
+<p><strong>Mục đích:</strong> snapshot cố định toàn bộ active parent ban đầu. Sort parent theo shard name để retry có cùng thứ tự. Expected child names tuân theo naming do Solr tạo cho shard split.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="2df52b33-aa1a-44c9-b442-89352819855f">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "actions": [
+    {
+      "parentShard": "shard1",
+      "parentRange": "80000000-ffffffff",
+      "numSubShards": 2,
+      "expectedChildren": ["shard1_0", "shard1_1"],
+      "status": "NOT_STARTED"
+    },
+    {
+      "parentShard": "shard2",
+      "parentRange": "00000000-7fffffff",
+      "numSubShards": 2,
+      "expectedChildren": ["shard2_0", "shard2_1"],
+      "status": "NOT_STARTED"
+    }
+  ]
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Sequential rule:</strong> với 2→4, submit shard1; shard2 vẫn <code>NOT_STARTED</code>. Chỉ sau khi shard1 topology/query validation pass và action shard1 đã persist <code>COMPLETED</code> mới được select/submit shard2. Với 4→8 áp dụng tương tự cho bốn parent.</p>
+
+<h3>8.5 Persist split intent</h3>
+<p>Chọn action đầu tiên có status khác COMPLETED. Trước HTTP, conditional-update action từ <code>NOT_STARTED → RUNNING</code>, persist stable <code>requestId=&lt;mongoId&gt;:split:&lt;parentShard&gt;</code> và <code>startedAt=now</code>. Nếu modifiedCount bằng 0, dừng trước HTTP.</p>
+
+<h3>8.6 Call SPLITSHARD</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="4b449339-d94f-415b-9123-897311f7c693">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=SPLITSHARD&collection=topic_100001&shard=shard1&numSubShards=2&splitMethod=rewrite&waitForFinalState=true&timing=true&async=66b8:split:shard1&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>action</code></td><td>Yes</td><td><code>SPLITSHARD</code></td><td>Collection action.</td></tr>
+    <tr><td><code>collection</code></td><td>Yes</td><td>Topic collection</td><td>Không đổi collection name.</td></tr>
+    <tr><td><code>shard</code></td><td>Yes</td><td>Current parent</td><td>Một request chỉ split một parent.</td></tr>
+    <tr><td><code>numSubShards</code></td><td>Yes trong flow</td><td>2, 4 hoặc 8</td><td>Số child của parent.</td></tr>
+    <tr><td><code>splitMethod</code></td><td>Yes trong flow</td><td><code>rewrite</code></td><td>Tạo child index bằng rewrite; phải bảo đảm disk headroom.</td></tr>
+    <tr><td><code>waitForFinalState</code></td><td>Yes trong flow</td><td><code>true</code></td><td>Async task chỉ completed sau khi affected replicas active; vẫn phải validate topology/query.</td></tr>
+    <tr><td><code>timing</code></td><td>No</td><td><code>true</code></td><td>Thu timing.</td></tr>
+    <tr><td><code>async</code></td><td>Yes trong flow</td><td>Stable request ID</td><td>Tracking và idempotency/recovery.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td><code>json</code></td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<p>Không truyền <code>ranges</code>, <code>split.key</code>, <code>splitByPrefix</code> hoặc <code>splitFuzz</code>.</p>
+<p><strong>Accepted response:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="4262196d-a11d-4335-903c-4106c8832e46">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 0, "QTime": 115 },
+  "requestid": "66b8:split:shard1"
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Parse:</strong> HTTP status, <code>responseHeader.status</code>, <code>requestid</code>, error/exception fields. Accepted chỉ có nghĩa request đã được nhận. Giữ action <code>RUNNING</code>; response summary ghi vào structured logs thay vì Mongo.</p>
+<p><strong>Rejected response mẫu:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="61973317-b4ef-4401-98af-256bf5719334">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 400, "QTime": 4 },
+  "error": {
+    "metadata": ["error-class", "org.apache.solr.common.SolrException"],
+    "msg": "Unknown shard 'shard1' in collection 'topic_100001'",
+    "code": 400
+  }
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>HTTP 400/409 hoặc duplicate request-ID message vẫn phải được reconciliation bằng REQUESTSTATUS/CLUSTERSTATUS, vì persisted intent có thể thuộc request đã được submit ở attempt trước. HTTP 401/403 là AUTH/CONFIG failure; không retry mutation.</p>
+<p><strong>Ambiguous HTTP:</strong> timeout/connection reset không được generic retry và không tạo request ID mới. Cập nhật compact <code>lastError</code>/retry fields, ghi detail vào structured logs, giữ action <code>RUNNING</code>, query REQUESTSTATUS với ID cũ rồi CLUSTERSTATUS nếu notfound.</p>
+
+<h3>8.7 Poll REQUESTSTATUS</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="8a38d7e0-6200-47d7-898f-a9ef8802f15a">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=REQUESTSTATUS&requestid=66b8:split:shard1&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>action=REQUESTSTATUS</code></td><td>Yes</td><td>Query async task status.</td></tr>
+    <tr><td><code>requestid</code></td><td>Yes</td><td>Đúng persisted request ID.</td></tr>
+    <tr><td><code>wt=json</code></td><td>No</td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<p><strong>Response fixtures:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="0822b93d-741f-44ee-91e0-b75db67758aa">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[// submitted
+{"responseHeader":{"status":0,"QTime":1},"status":{"state":"submitted","msg":"found task in submitted tasks"}}
+
+// running
+{"responseHeader":{"status":0,"QTime":1},"status":{"state":"running","msg":"found [66b8:split:shard1] in running tasks"}}
+
+// completed
+{"responseHeader":{"status":0,"QTime":1},"status":{"state":"completed","msg":"found task in completed tasks"}}
+
+// failed
+{"responseHeader":{"status":0,"QTime":1},"status":{"state":"failed","msg":"found task in failed tasks"}}
+
+// not found
+{"responseHeader":{"status":0,"QTime":1},"status":{"state":"notfound","msg":"Did not find taskid [66b8:split:shard1] in any tasks queue"}}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Parse:</strong> HTTP status, <code>responseHeader.status</code>, <code>status.state</code>, <code>status.msg</code>, nested action response và mọi failure/exception nếu có. Supported states: <code>submitted</code>, <code>running</code>, <code>completed</code>, <code>failed</code>, <code>notfound</code>.</p>
+<table>
+  <tbody>
+    <tr><th>Solr state</th><th>Mongo action</th><th>Worker action</th></tr>
+    <tr><td>submitted</td><td>RUNNING</td><td>Log result; poll cùng request ID ở tick sau.</td></tr>
+    <tr><td>running</td><td>RUNNING</td><td>Log result; poll cùng request ID ở tick sau.</td></tr>
+    <tr><td>completed</td><td>Chưa mark COMPLETED</td><td>Chạy topology/range/RF/query validation.</td></tr>
+    <tr><td>failed</td><td>Chưa mark FAILED</td><td>Reconcile bằng CLUSTERSTATUS.</td></tr>
+    <tr><td>notfound</td><td>Giữ current action status</td><td>Reconcile bằng CLUSTERSTATUS.</td></tr>
+  </tbody>
+</table>
+<p>Mỗi tick poll tối đa một lần/action. State/response/timing ghi vào structured logs; Mongo chỉ update retry fields khi cần backoff. Dùng backoff/jitter khi Solr unavailable.</p>
+
+<h3>8.8 Reconcile notfound, failed hoặc ambiguous submit</h3>
+<p><strong>API:</strong> REQUESTSTATUS trước, sau đó CLUSTERSTATUS một collection. <strong>Decision matrix:</strong></p>
+<table>
+  <tbody>
+    <tr><th>Parent</th><th>Expected children</th><th>Action</th></tr>
+    <tr><td>ACTIVE</td><td>Không tồn tại child artifact</td><td>Safe submit lại <strong>cùng request ID</strong> sau conditional checkpoint.</td></tr>
+    <tr><td>INACTIVE</td><td>Đủ expected children</td><td>Không submit; chạy validation.</td></tr>
+    <tr><td>ACTIVE</td><td>Children đang CONSTRUCTION/RECOVERY hoặc đã xuất hiện</td><td>Transient wait/retry topology read; không submit.</td></tr>
+    <tr><td>INACTIVE</td><td>Thiếu child hoặc range sai</td><td>FAILED structural, giữ blocksNextReshard=true, alert.</td></tr>
+    <tr><td>Không có parent</td><td>Không đủ validated children</td><td>FAILED + urgent alert.</td></tr>
+  </tbody>
+</table>
+<p>Không dùng riêng <code>REQUESTSTATUS=failed</code> để quyết định resubmit vì task có thể đã thay đổi topology trước khi failed response được ghi.</p>
+
+<h3>8.9 Validate Topic — parent, children, range, replicas và documents</h3>
+<p><strong>Topology pass:</strong> parent inactive; child count đúng; tất cả child active; mọi replica active; actual RF=2; đúng một leader/child; union child ranges bằng parent range, không gap/overlap/outside.</p>
+<p><strong>Direct parent/core count snapshot:</strong> dùng <code>base_url</code> và <code>core</code> lấy từ CLUSTERSTATUS, không tự dựng URL nếu topology đã cung cấp.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="76cb26c7-165e-4f4b-b427-a51ab7e01018">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solr9-testing1.ynm.local:8985/solr/topic_100001_shard1_replica_n1/select?q=*:*&rows=0&distrib=false&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>q</code></td><td>Yes</td><td><code>*:*</code></td><td>Đếm documents visible trên core.</td></tr>
+    <tr><td><code>rows</code></td><td>Yes</td><td><code>0</code></td><td>Không lấy payload.</td></tr>
+    <tr><td><code>distrib</code></td><td>Yes</td><td><code>false</code></td><td>Không fan-out; đo đúng replica/core được chọn.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td><code>json</code></td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<p><strong>Success response:</strong> <code>{"responseHeader":{"status":0,"QTime":2},"response":{"numFound":50260000,"start":0,"numFoundExact":true,"docs":[]}}</code>. A 404 core-not-found hoặc replica unavailable là transient/topology-drift input: refresh CLUSTERSTATUS trước khi retry; không tiếp tục dùng stale <code>base_url/core</code>.</p>
+<p><strong>Explicit child distributed query:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="098068f9-36be-41e5-84e6-8c55676f2d30">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/topic_100001/select?q=*:*&rows=0&shards=shard1_0,shard1_1&shards.info=true&shards.tolerant=requireZkConnected&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>q</code></td><td>Yes</td><td><code>*:*</code></td><td>Đếm toàn bộ expected children.</td></tr>
+    <tr><td><code>rows</code></td><td>Yes</td><td><code>0</code></td><td>Không lấy payload.</td></tr>
+    <tr><td><code>shards</code></td><td>Yes</td><td>Comma-separated expected children</td><td>Không để coordinator chọn cả inactive parent.</td></tr>
+    <tr><td><code>shards.info</code></td><td>Yes</td><td><code>true</code></td><td>Trả evidence theo shard.</td></tr>
+    <tr><td><code>shards.tolerant</code></td><td>Yes</td><td><code>requireZkConnected</code></td><td>Reject disconnected/partial topology.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td><code>json</code></td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<p><strong>Success response rút gọn:</strong></p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="f7850be6-a12f-465b-b079-a92703938570">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 0, "QTime": 18, "zkConnected": true },
+  "response": { "numFound": 100530000, "start": 0, "docs": [] },
+  "shards.info": {
+    "shard1_0": { "numFound": 50270000, "time": 7 },
+    "shard1_1": { "numFound": 50260000, "time": 8 }
+  }
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Failed/partial:</strong> bất kỳ <code>partialResults=true</code>, missing child key trong <code>shards.info</code>, <code>exception</code>/<code>error</code> ở child, ZK disconnected hoặc non-zero status đều không pass. Ghi per-child failure vào structured logs và retry nếu topology đang recovery; deadline exceeded chuyển error theo classification.</p>
+<p><strong>Parse:</strong> <code>responseHeader.status</code>, <code>responseHeader.zkConnected</code>, <code>partialResults</code>, <code>response.numFound</code>, <code>shards.info</code> và per-shard exception. Pass chỉ khi query thành công, ZK connected và không partial.</p>
+<p><strong>Range algorithm:</strong> parse hex endpoint thành signed 32-bit logical values, chuẩn hóa interval inclusive, sort child theo lower bound. Cursor bắt đầu tại parent lower; mỗi child lower phải bằng cursor, upper không vượt parent upper; cursor kế tiếp bằng upper+1; sau child cuối cursor phải bằng parent upper+1. Bất kỳ gap/overlap/outside/parse overflow nào là structural failure.</p>
+<p><strong>Num Docs rule:</strong> collection vẫn nhận write nên không yêu cầu <code>before_count == after_count</code> tuyệt đối. Nếu có mutation audit, dùng lower/upper envelope theo hard delete, new unique docs và visibility margin. Nếu không có audit, sample ít nhất ba lần, cách nhau tối thiểu một search-visibility/auto-soft-commit interval, so delta/rate với historical p99. Signal không chắc chắn giữ PENDING và retry; chỉ terminal khi có bằng chứng mất/duplicate data vượt policy.</p>
+<p><strong>Mongo after pass:</strong> set current action <code>status=COMPLETED</code> và <code>completedAt=now</code>. Validation/result detail ghi structured logs. <code>parentDeletedAt</code> giữ null cho tới cleanup. Action hiện tại phải được mark trước khi kiểm tra còn parent khác, kể cả action cuối.</p>
+
+<h3>8.10 Has More Parent Shard?</h3>
+<p>Chọn action đầu tiên có status khác COMPLETED. Nếu là NOT_STARTED thì thực hiện từ mục 8.5; nếu RUNNING thì poll/reconcile; nếu FAILED thì mark job FAILED. Không tìm parent mới từ current active topology vì children không thuộc initial plan.</p>
+<p>Nếu không còn action: verify tất cả action <code>COMPLETED</code> rồi xử lý leader. Nếu action có status FAILED/inconsistent thì không rebalance và chuyển job sang FAILED.</p>
+
+<h3>8.11 Build leaderTargets và ADDREPLICAPROP</h3>
+<p><strong>Mục đích:</strong> trải leader giữa live nodes mà không move replica/data. Đọc CLUSTERSTATUS mới; tính leader distribution; với từng child cần đổi leader, chọn active non-leader replica trên node phù hợp. Persist toàn bộ targets trước mutation.</p>
+<p><strong>Scheduled processing rule:</strong> khi tất cả actions COMPLETED, <code>leaderTargets=null/missing</code> nghĩa là chưa tính; worker persist <code>[]</code> nếu không cần đổi hoặc persist danh sách shard/replica cố định nếu cần đổi. Với từng target, đọc actual property/leader trước mutation; chỉ gọi ADDREPLICAPROP khi property chưa đúng. Response và verification evidence ghi structured logs, không thêm progress field vào Mongo.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="078fe42e-370a-41b2-b549-d22a2256e2a7">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=ADDREPLICAPROP&collection=topic_100001&shard=shard1_1&replica=core_node4&property=preferredLeader&property.value=true&shardUnique=true&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th></tr>
+    <tr><td><code>collection</code></td><td>Yes</td><td>Topic collection</td></tr>
+    <tr><td><code>shard</code></td><td>Yes</td><td>Child shard</td></tr>
+    <tr><td><code>replica</code></td><td>Yes</td><td>Target replica name, ví dụ core_node4</td></tr>
+    <tr><td><code>property</code></td><td>Yes</td><td><code>preferredLeader</code></td></tr>
+    <tr><td><code>property.value</code></td><td>Yes</td><td><code>true</code></td></tr>
+    <tr><td><code>shardUnique</code></td><td>Yes</td><td><code>true</code></td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td><code>json</code></td></tr>
+  </tbody>
+</table>
+<p><strong>Response:</strong> <code>{"responseHeader":{"status":0,"QTime":9}}</code>. Parse HTTP status, Solr status và errors. Sau mỗi call, đọc CLUSTERSTATUS để xác nhận shard có đúng một preferred target theo plan. Status 0 chỉ xác nhận property request được xử lý.</p>
+<p><strong>Failed response mẫu:</strong> <code>{"responseHeader":{"status":400,"QTime":2},"error":{"msg":"Replica core_node4 does not exist or is not active","code":400}}</code>. Refresh topology; inactive/missing planned target không được xem là success.</p>
+
+<h3>8.12 REBALANCELEADERS</h3>
+<p>Nếu có leader target chưa đạt sau khi preferred property được verify, gọi REBALANCELEADERS. Request/response ghi structured logs. Nếu scheduler/pod dừng giữa chừng, tick sau đọc actual leader trước khi quyết định gọi lại.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="5a6bf138-3bb7-42fd-8f13-1b97281e8155">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=REBALANCELEADERS&collection=topic_100001&maxAtOnce=1&maxWaitSeconds=120&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>collection</code></td><td>Yes</td><td>Topic collection</td><td>Collection cần rebalance.</td></tr>
+    <tr><td><code>maxAtOnce</code></td><td>No</td><td>1</td><td>Giới hạn leader elections đồng thời.</td></tr>
+    <tr><td><code>maxWaitSeconds</code></td><td>No</td><td>120</td><td>Thời gian chờ mỗi operation.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td>json</td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="f284b8c9-416d-40a0-89c9-827c334899ef">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "responseHeader": { "status": 0, "QTime": 3054 },
+  "Summary": {
+    "Success": "All active replicas with the preferredLeader property set are leaders"
+  },
+  "alreadyLeaders": {
+    "core_node5": { "status": "skipped", "msg": "Replica is already the leader" }
+  },
+  "inactivePreferreds": {},
+  "successes": {
+    "shard1_1": { "status": "success", "msg": "Successfully changed leader" }
+  },
+  "failures": {}
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>Parse:</strong> <code>responseHeader.status</code>, <code>Summary</code>, <code>alreadyLeaders</code>, <code>inactivePreferreds</code>, <code>successes</code>, <code>failures</code>. <code>inactivePreferreds</code> hoặc failures không phải pass dù request processed. Gọi lại CLUSTERSTATUS và chỉ final-validate khi từng persisted target thực sự có <code>leader=true</code>.</p>
+<p><strong>Processed nhưng chưa đạt response mẫu:</strong> <code>{"responseHeader":{"status":0,"QTime":120003},"Summary":{"Failure":"One or more preferred replicas were inactive"},"inactivePreferreds":{"core_node4":{"status":"failure","msg":"Replica is not active"}},"successes":{},"failures":{"shard1_1":{"status":"failure","msg":"Could not change leader"}}}</code>. Parser phải ưu tiên failure collections và actual topology, không chỉ HTTP/status 0.</p>
+<p><strong>Recovery:</strong> sau timeout/crash, đọc actual leader. Nếu target đã là leader thì idempotent pass; nếu target còn active nhưng chưa là leader thì retry theo backoff; nếu target inactive hoặc topology drift thì re-plan có kiểm soát hoặc FAILED theo structural policy.</p>
+
+<h3>8.13 Final verification và Mark DONE</h3>
+<p><strong>Required pass:</strong> tất cả actions completed; active child count bằng target; ranges hợp lệ; RF thực tế 2; đúng một leader/shard; actual leaders khớp <code>leaderTargets</code>; collection query và child query pass; không còn split request ở submitted/running; document-count signal trong policy.</p>
+<p><strong>Atomic update:</strong> set <code>status=DONE</code>, <code>doneAt=now</code>, <code>retentionUntil=now+30d</code>, <code>blocksNextReshard=true</code> và <code>updatedAt=now</code>. DONE tự mang ý nghĩa final validation đã pass; detailed evidence nằm trong structured logs.</p>
+<p><strong>Logs/metrics:</strong> <code>RESHARD_JOB_DONE</code>, duration by operation/action, doc deltas, target shard count, leader distribution before/after.</p>
+
+<h3>8.14 DELETESTATUS — cleanup async responses</h3>
+<p>Cleanup từng <code>actions[].requestId</code> sau job <code>DONE</code>. Đây là best-effort housekeeping, không được rollback DONE. Không dùng <code>flush=true</code>.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="9f92530d-54e1-4f4f-b972-80051ce0d14d">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=DELETESTATUS&requestid=66b8:split:shard1&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>action=DELETESTATUS</code></td><td>Yes</td><td>Xóa stored async response.</td></tr>
+    <tr><td><code>requestid</code></td><td>Yes</td><td>Một request ID thuộc job.</td></tr>
+    <tr><td><code>wt=json</code></td><td>No</td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="a827fa51-fe13-4764-bca1-3e58b7895db5">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[// removed
+{"responseHeader":{"status":0,"QTime":1},"status":"successfully removed stored response for [66b8:split:shard1]"}
+
+// already absent: also idempotent success
+{"responseHeader":{"status":0,"QTime":1},"status":"[66b8:split:shard1] not found in stored responses"}]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>Mỗi Split Job tick có thể housekeeping các job <code>DONE</code> có <code>asyncStatusCleanedAt=null</code>; nhóm này không tính vào giới hạn 5 job PENDING. Chỉ set <code>asyncStatusCleanedAt=now</code> sau khi mọi <code>actions[].requestId</code> đã removed hoặc already absent. Nếu timeout hoặc còn request ID chưa cleanup thì giữ null và retry ở tick sau; không rollback DONE.</p>
+
+<h2>9. Clear Parent Topic Job — step-by-step</h2>
+
+<h3>9.1 Get DONE jobs</h3>
+<p>Weekly scheduler query <code>status=DONE</code>, <code>retentionUntil &lt;= now</code> và <code>nextRetryAt &lt;= now</code>. Local non-overlap guard bảo đảm không có hai cleanup run trong cùng pod; cleanup không tính vào giới hạn 5 job PENDING.</p>
+
+<h3>9.2 Has Enough Time?</h3>
+<p>Authoritative condition: <code>now &gt;= doneAt + 30 days</code> và <code>now &gt;= retentionUntil</code>. Nếu chưa đủ, skip không mutate Solr. Nếu clock/data inconsistency, log <code>RETENTION_TIMESTAMP_INVALID</code> và không delete.</p>
+
+<h3>9.3 Precheck parent</h3>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="260fe8e2-a721-485c-8554-50cdcf82d4cc">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=CLUSTERSTATUS&collection=topic_100001&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<p>Trước mỗi parent delete: collection/query healthy; expected children active, RF=2, range valid; parent hoặc absent hoặc <code>state=inactive</code>. Nếu parent đã absent, set <code>actions[].parentDeletedAt=now</code> bằng conditional update và không gọi DELETESHARD. Parent active, children unhealthy hoặc topology drift làm cleanup dừng/retry/alert; không cố delete.</p>
+
+<h3>9.4 DELETESHARD</h3>
+<p>Chọn action đầu tiên có <code>completedAt != null</code> và <code>parentDeletedAt=null</code>. Đọc CLUSTERSTATUS ngay trước mutation; chỉ gọi DELETESHARD khi parent vẫn <code>INACTIVE</code> và expected children healthy. Attempt và response được ghi vào structured logs, không thêm field cleanup phụ vào Mongo.</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="b497fcd5-9b18-4079-bd12-0bd93fd5838d">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[curl --location --request GET \
+  'http://solrtopic-testing.ynm.local/solr/admin/collections?action=DELETESHARD&collection=topic_100001&shard=shard1&wt=json' \
+  --header 'Authorization: Basic <base64-user-pass>']]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Parameter</th><th>Required</th><th>Flow value</th><th>Ý nghĩa</th></tr>
+    <tr><td><code>collection</code></td><td>Yes</td><td>Topic collection</td><td>Collection chứa inactive parent.</td></tr>
+    <tr><td><code>shard</code></td><td>Yes</td><td>Inactive parent name</td><td>Xóa một parent/lần.</td></tr>
+    <tr><td><code>deleteInstanceDir</code></td><td>No</td><td>true/default</td><td>Xóa instance directory.</td></tr>
+    <tr><td><code>deleteDataDir</code></td><td>No</td><td>true/default</td><td>Xóa data directory.</td></tr>
+    <tr><td><code>deleteIndex</code></td><td>No</td><td>true/default</td><td>Xóa index directory.</td></tr>
+    <tr><td><code>followAliases</code></td><td>No</td><td>false</td><td>Flow dùng collection trực tiếp.</td></tr>
+    <tr><td><code>wt</code></td><td>No</td><td>json</td><td>JSON response.</td></tr>
+  </tbody>
+</table>
+<p><strong>Representative response:</strong> <code>{"responseHeader":{"status":0,"QTime":125},"success":{}}</code>. Response shape có thể chứa per-node response khác nhau; không chỉ dựa vào <code>success</code>.</p>
+<p><strong>Not-found/invalid-state response mẫu:</strong> <code>{"responseHeader":{"status":400,"QTime":3},"error":{"msg":"No shard with name shard1 exists for collection topic_100001","code":400}}</code>. Nếu CLUSTERSTATUS xác nhận parent absent thì normalize thành idempotent success; nếu parent vẫn present hoặc active thì không normalize và phải retry/alert theo reason.</p>
+<p><strong>Verify:</strong> gọi lại CLUSTERSTATUS. Pass khi parent name không còn trong <code>collection.shards</code>, children vẫn active/RF2 và collection query thành công. HTTP timeout/connection reset → CLUSTERSTATUS; parent absent thì set <code>actions[].parentDeletedAt=now</code> và coi là idempotent success, parent còn tồn tại thì giữ job DONE và retry với backoff.</p>
+
+<h3>9.5 Mark COMPLETE</h3>
+<p>Delete parents tuần tự. Chỉ khi toàn bộ <code>actions[].parentDeletedAt</code> đã có giá trị, CLUSTERSTATUS xác nhận mọi initial parent absent và final query pass mới conditional-update <code>status=COMPLETE</code>, <code>blocksNextReshard=false</code>, <code>completedAt=now</code> và <code>updatedAt=now</code>. Từ thời điểm này detector mới có thể tạo reshard job tiếp theo cho collection.</p>
+
+<h2>10. State Of Job — business transition meaning</h2>
+<table>
+  <tbody>
+    <tr><th>State transition</th><th>Trigger thực tế</th></tr>
+    <tr><td>detected → NEW</td><td>Detect Mongo insert acknowledged.</td></tr>
+    <tr><td>NEW → PENDING</td><td>Single-pod Split scheduler xác nhận số PENDING dưới limit và atomic claim job, sau đó build fixed actions.</td></tr>
+    <tr><td>PENDING → PENDING</td><td>Còn action RUNNING/NOT_STARTED, validation, transient retry hoặc leader work chưa verified.</td></tr>
+    <tr><td>PENDING → FAILED</td><td>Structural/terminal failure có evidence; <code>blocksNextReshard</code> vẫn true.</td></tr>
+    <tr><td>PENDING → DONE</td><td>Tất cả parent action, topology/query validation và leader verification pass.</td></tr>
+    <tr><td>DONE → COMPLETE</td><td>Retention pass, tất cả inactive parent absent và final query pass.</td></tr>
+  </tbody>
+</table>
+<ac:structured-macro ac:name="note" ac:schema-version="1" ac:macro-id="ffde66b4-1f3b-48d6-91ca-7f05853fe82a">
+  <ac:rich-text-body>
+    <p><strong>“completed” trên State Of Job không có nghĩa <code>REQUESTSTATUS=completed</code>.</strong> Nó có nghĩa toàn bộ main reshard pipeline completed: mọi initial parent đã split tuần tự, action checkpoint đã complete, topology/range/RF/query validation pass và leader rebalance đã được verify bằng actual cluster state.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>11. Validation specification</h2>
+
+<h3>11.1 Validation levels</h3>
+<ol>
+  <li><strong>HTTP success:</strong> request nhận được response hợp lệ.</li>
+  <li><strong>Solr command success:</strong> <code>responseHeader.status=0</code>, không có exception/failure field.</li>
+  <li><strong>Business/topology success:</strong> actual topology, ranges, leaders và queries đạt contract.</li>
+</ol>
+<p>Chỉ level 3 được mark action completed hoặc chuyển job sang DONE/COMPLETE.</p>
+
+<h3>11.2 Child ranges cover parent range</h3>
+<p>Range verification không so sánh string và không chỉ so min/max. Implementation phải:</p>
+<ol>
+  <li>Parse parent/child hex endpoints theo signed 32-bit hash range semantics.</li>
+  <li>Validate mỗi interval có lower &lt;= upper và nằm trong parent.</li>
+  <li>Sort child theo lower endpoint.</li>
+  <li>Child đầu bắt đầu đúng parent lower.</li>
+  <li>Mỗi child kế tiếp bắt đầu ngay sau upper của child trước; không gap, không overlap.</li>
+  <li>Child cuối kết thúc đúng parent upper.</li>
+  <li>Số child đúng <code>numSubShards</code> và names đúng fixed plan.</li>
+</ol>
+<p><strong>Error codes:</strong> <code>RANGE_PARSE_INVALID</code>, <code>RANGE_GAP</code>, <code>RANGE_OVERLAP</code>, <code>RANGE_OUTSIDE_PARENT</code>, <code>CHILD_COUNT_MISMATCH</code>.</p>
+
+<h3>11.3 “Không có biến động doc count bất thường”</h3>
+<p>Exact equality không ổn định vì collection tiếp tục nhận create/update/delete và search visibility có độ trễ. Validation sử dụng signal có context:</p>
+<ul>
+  <li><strong>Có mutation audit:</strong> expected lower bound = parent snapshot − observed hard deletes − margin; expected upper bound = parent snapshot + observed new unique docs + margin. Margin = peak mutation rate × maximum observed search-visibility lag.</li>
+  <li><strong>Không có audit:</strong> lấy ít nhất ba sample tổng child count, mỗi sample cách nhau tối thiểu một configured visibility interval; so absolute/percentage delta và rate-of-change với historical p99 của collection cùng traffic class.</li>
+  <li>Luôn yêu cầu collection query thành công, explicit child query thành công, không partial, child topology/range pass.</li>
+  <li>Metrics/count unavailable hoặc delta chưa kết luận được là transient: giữ PENDING, retry và alert khi vượt validation deadline. Không tự động kết luận data loss.</li>
+</ul>
+<p>Threshold cụ thể phải là config/canary outcome, không hardcode trong code. Ghi raw samples, timestamps, mutation counters, computed bounds và decision reason vào structured logs/metrics để operator audit; không mở rộng Mongo schema cho validation history.</p>
+
+<h3>11.4 waitForFinalState=true phải check gì?</h3>
+<p><code>waitForFinalState=true</code> chỉ làm async task chờ affected replicas đạt final active state theo Solr command. Worker vẫn phải kiểm tra:</p>
+<ul>
+  <li>REQUESTSTATUS completed không chứa nested failure/exception.</li>
+  <li>Parent inactive, expected children đủ và active.</li>
+  <li>Mọi child có đúng 2 active replicas, một leader, nodes live.</li>
+  <li>Union child ranges phủ đúng parent range.</li>
+  <li>Collection query và explicit-child query thành công, ZK connected, không partial.</li>
+  <li>Document-count signal không bất thường theo mục 11.3.</li>
+  <li>Sau leader step, planned preferred replica thực sự là leader.</li>
+</ul>
+
+<h2>12. Retry, idempotency và failure policy</h2>
+
+<h3>12.1 Classification</h3>
+<table>
+  <tbody>
+    <tr><th>Category</th><th>Examples</th><th>Job handling</th></tr>
+    <tr><td>TRANSIENT</td><td>Timeout, connection reset, ZK disconnected, replica recovery, partial query, leader transition, metrics unavailable</td><td>Giữ PENDING, tăng <code>retryCount</code>, set <code>nextRetryAt</code> với exponential backoff + jitter và cập nhật compact <code>lastError</code>.</td></tr>
+    <tr><td>AMBIGUOUS_MUTATION</td><td>Client timeout sau SPLITSHARD/DELETESHARD</td><td>Không blind retry; REQUESTSTATUS/CLUSTERSTATUS reconcile trước.</td></tr>
+    <tr><td>STRUCTURAL</td><td>Range gap/overlap, missing child, unexpected active child, parent missing without complete children, multiple leaders, partial split</td><td>FAILED, <code>blocksNextReshard=true</code>, operator alert và evidence.</td></tr>
+    <tr><td>AUTH/CONFIG</td><td>401/403, invalid base URL, unsupported router</td><td>Không retry nhanh; alert, circuit-break affected worker/run.</td></tr>
+  </tbody>
+</table>
+
+<h3>12.2 Error state và structured error log</h3>
+<p>Mongo <code>lastError</code> chỉ giữ lỗi hiện tại ở dạng compact, ví dụ <code>{"code":"SOLR_TIMEOUT","message":"REQUESTSTATUS timed out","at":"2026-08-14T01:05:00Z"}</code>. Object chi tiết dưới đây là structured log, không phải field Mongo bắt buộc:</p>
+<ac:structured-macro ac:name="code" ac:schema-version="1" ac:macro-id="64cc163a-143f-48ba-8327-7ec95c79a322">
+  <ac:parameter ac:name="language">javascript</ac:parameter>
+  <ac:plain-text-body><![CDATA[{
+  "code": "SOLR_REQUEST_NOT_FOUND_PARTIAL_TOPOLOGY",
+  "category": "STRUCTURAL",
+  "retryable": false,
+  "operation": "SPLIT_RECONCILIATION",
+  "parentShard": "shard1",
+  "requestId": "66b8:split:shard1",
+  "httpStatus": 200,
+  "solrStatus": 0,
+  "message": "Expected children are incomplete after request disappeared",
+  "occurredAt": "2026-08-14T01:05:00Z"
+}]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h3>12.3 Mutation idempotency rules</h3>
+<ul>
+  <li><code>SPLITSHARD</code>: stable request ID per job+parent; reconcile request and topology before any retry.</li>
+  <li><code>ADDREPLICAPROP</code>: persist target; read actual property before retry.</li>
+  <li><code>REBALANCELEADERS</code>: read actual leader before retry.</li>
+  <li><code>DELETESHARD</code>: parent absent is success; parent present after timeout is retry candidate.</li>
+  <li><code>DELETESTATUS</code>: removed và already absent đều success.</li>
+</ul>
+
+<h2>13. HTTP, authentication và observability contract</h2>
+
+<h3>13.1 Authentication</h3>
+<p>Tất cả curl testing dùng <code>Authorization: Basic &lt;base64-user-pass&gt;</code>. Implementation lấy credential từ secret manager/config reference, không hardcode, không persist encoded credential trong Mongo, không log Authorization header và phải redact credential khỏi exception/trace.</p>
+
+<h3>13.2 HTTP client</h3>
+<p>Client phải cấu hình <code>baseUrl</code>, auth secret reference, connect timeout, read timeout, maximum response size, TLS/network policy và retry classification. Generic HTTP retry chỉ dùng cho read-only API khi phù hợp. Mutation như SPLITSHARD/DELETESHARD bắt buộc reconciliation trước retry.</p>
+
+<h3>13.3 Required logs</h3>
+<p>Mọi log có structured fields: <code>jobId</code>, collection, status, actionStatus, parentShard, requestId, operation, worker, attempt, elapsedMs, HTTP/Solr status, decisionCode và bounded topology summary khi liên quan. Không log raw Authorization hoặc unbounded response.</p>
+<p>Event names tối thiểu: <code>DETECT_RUN_STARTED</code>, <code>DETECT_TICK_OVERLAP_SKIPPED</code>, <code>JOB_CLAIMED</code>, <code>SPLIT_INTENT_PERSISTED</code>, <code>SPLIT_ACCEPTED</code>, <code>SPLIT_RECONCILIATION_STARTED</code>, <code>SPLIT_VALIDATED</code>, <code>LEADER_REBALANCE_VERIFIED</code>, <code>RESHARD_JOB_DONE</code>, <code>ASYNC_STATUS_CLEANED</code>, <code>PARENT_DELETE_VERIFIED</code>, <code>RESHARD_JOB_COMPLETE</code>, <code>RESHARD_JOB_FAILED</code>.</p>
+
+<h3>13.4 Metrics and alerts</h3>
+<table>
+  <tbody>
+    <tr><th>Metric</th><th>Type/use</th></tr>
+    <tr><td><code>reshard_jobs{status}</code></td><td>Gauge backlog/current job state.</td></tr>
+    <tr><td><code>reshard_actions{status}</code></td><td>Gauge per-parent action state.</td></tr>
+    <tr><td><code>reshard_operation_duration_seconds{operation}</code></td><td>Histogram latency/SLO với bounded operation labels.</td></tr>
+    <tr><td><code>reshard_solr_requests_total{action,result}</code></td><td>Counter API outcome.</td></tr>
+    <tr><td><code>reshard_split_reconcile_total{decision}</code></td><td>Counter ambiguous recovery.</td></tr>
+    <tr><td><code>reshard_validation_total{check,result}</code></td><td>Counter topology/query/count checks.</td></tr>
+    <tr><td><code>reshard_pending_jobs</code></td><td>Gauge concurrency; phải không vượt configured limit trong single-pod contract.</td></tr>
+    <tr><td><code>reshard_parent_retention_age_seconds</code></td><td>Gauge overdue cleanup.</td></tr>
+    <tr><td><code>reshard_query_latency/error_rate</code></td><td>Canary operational impact.</td></tr>
+  </tbody>
+</table>
+<p>Bounded <code>operation</code> labels: <code>DETECT</code>, <code>SPLIT_SUBMIT</code>, <code>REQUEST_STATUS</code>, <code>SPLIT_RECONCILIATION</code>, <code>SPLIT_VALIDATION</code>, <code>LEADER_REBALANCE</code>, <code>FINAL_VALIDATION</code>, <code>PARENT_DELETE</code>.</p>
+<p>Alert khi structural FAILED, PENDING/action không đổi quá operation deadline, PENDING backlog tăng liên tục, PENDING vượt configured limit, 401/403, ZK disconnected kéo dài, count signal vượt policy, retention cleanup overdue hoặc canary error budget bị vượt.</p>
+
+<h2>14. Implementation test plan</h2>
+
+<h3>14.1 API parser fixtures</h3>
+<ul>
+  <li>CLUSTERSTATUS RF=2 healthy; có inactive parent; transitional replica; missing/multiple leader.</li>
+  <li>SPLITSHARD accepted.</li>
+  <li>REQUESTSTATUS submitted, running, completed có/không nested response, failed, notfound.</li>
+  <li>ADDREPLICAPROP status 0.</li>
+  <li>REBALANCELEADERS success, already leader, inactive preferred, failures.</li>
+  <li>DELETESTATUS removed và already absent.</li>
+  <li>DELETESHARD representative/per-node response.</li>
+  <li>Solr HTTP 401, 403, 500, timeout, truncated/invalid JSON, oversized response.</li>
+</ul>
+
+<h3>14.2 Restart/tick-boundary tests</h3>
+<p>Dừng scheduler/pod ở các boundary sau. Tick tiếp theo phải dùng Mongo evidence và actual Solr state, không duplicate mutation và không tạo request ID mới:</p>
+<ul>
+  <li>Sau persist request ID/action RUNNING nhưng trước SPLITSHARD.</li>
+  <li>Sau HTTP accepted nhưng trước save response.</li>
+  <li>Trong REQUESTSTATUS polling.</li>
+  <li>Sau REQUESTSTATUS completed nhưng trước validation.</li>
+  <li>Sau validation nhưng trước action COMPLETED update.</li>
+  <li>Sau ADDREPLICAPROP nhưng trước tick đọc lại actual leader/property.</li>
+  <li>Sau REBALANCELEADERS nhưng trước actual leader verification.</li>
+  <li>Sau DELETESHARD nhưng trước update <code>actions[].parentDeletedAt</code>.</li>
+</ul>
+
+<h3>14.3 Functional/concurrency tests</h3>
+<ul>
+  <li>Detect schedule tạo đúng một NEW job cho mỗi eligible collection.</li>
+  <li>DONE và FAILED với <code>blocksNextReshard=true</code> làm Detect Job skip collection.</li>
+  <li>COMPLETE transition tự động set <code>blocksNextReshard=false</code>; historical COMPLETE documents vẫn được giữ.</li>
+  <li>Split tick claim NEW → PENDING; tick sau xử lý action theo status đã persist.</li>
+  <li>REQUESTSTATUS completed không trực tiếp mark action COMPLETED; validation pass mới được update.</li>
+  <li>2→4: shard1 submit/validate/checkpoint hoàn tất trước shard2 submit.</li>
+  <li>4→8: bốn initial parents xử lý tuần tự; children không bị thêm vào plan.</li>
+  <li>Tất cả actions COMPLETED mới được xử lý leader; actual leader sai thì job vẫn PENDING.</li>
+  <li>Partial unique index chỉ cho một job <code>blocksNextReshard=true</code> trên mỗi collection; historical COMPLETE jobs vẫn được giữ.</li>
+  <li>Local non-overlap guard bỏ qua tick chồng lấn; single pod không vượt 5 job PENDING.</li>
+  <li>Deployment test xác nhận <code>replicas=1</code> và rollout không tạo hai active scheduler pod; multi-pod bị chặn cho tới khi có distributed fencing.</li>
+  <li>Continuous create/update/delete trong split: no exact-equality assertion; count policy hoạt động.</li>
+  <li>Range property tests: full signed 32-bit range, boundary, gap, overlap, outside và invalid hex.</li>
+  <li>Final validation pass mới chuyển DONE; cleanup schedule bỏ qua DONE job chưa đủ 30 ngày.</li>
+  <li>Parent absent sau timeout là idempotent pass; tất cả parent absent mới chuyển COMPLETE.</li>
+  <li>Action selection chọn action đầu tiên chưa COMPLETED, không cần current-action pointer.</li>
+  <li><code>leaderTargets</code> xử lý đúng ba trường hợp null/missing, empty array và array có targets.</li>
+  <li>DELETESTATUS retry cho tới khi <code>asyncStatusCleanedAt</code> có giá trị.</li>
+  <li>Serialized Mongo job không chứa field đã đánh dấu xóa/gộp ở mục 6.3.</li>
+</ul>
+
+<h3>14.4 Staging/canary acceptance</h3>
+<ul>
+  <li>Chạy canary một collection nhỏ rồi tăng dần document size và concurrency.</li>
+  <li>Đủ disk headroom cho rewrite; theo dõi CPU, disk I/O, heap, GC, recovery, update/query p95/p99 và error rate.</li>
+  <li>Không planned read/write downtime; transient impact nằm trong error budget đã phê duyệt.</li>
+  <li>Restart/tick-boundary test qua pod restart/node restart; không duplicate SPLITSHARD hoặc xóa parent sớm.</li>
+  <li>Mongo operational state kết hợp structured logs đủ để operator giải thích job/action transition.</li>
+</ul>
+
+<h2>15. Definition of Done cho implementation</h2>
+<ul>
+  <li>Detector dùng actual active RF=2, active shard count và exact/non-partial count gate.</li>
+  <li>Partial unique blocking index, single-pod non-overlap, PENDING limit và conditional job/action update được test.</li>
+  <li>Fixed parent plan và stable request IDs được persist; parent split tuần tự.</li>
+  <li>Mọi Solr API có typed parser, bounded response và error classification.</li>
+  <li>Mutation ambiguity luôn qua reconcile; không blind retry.</li>
+  <li>Mongo chỉ giữ operational state tối thiểu; range, replica, leader, query và count-signal evidence chi tiết nằm trong structured logs.</li>
+  <li>DONE chỉ sau final verify; COMPLETE chỉ sau retention và parent absence.</li>
+  <li>DELETESTATUS dọn từng job request ID, không flush global statuses.</li>
+  <li>Dashboard/alerts, restart/tick-boundary suite và canary error-budget gate sẵn sàng.</li>
+</ul>
+
+<h2>16. Official references</h2>
+<ul>
+  <li><a href="https://solr.apache.org/guide/solr/latest/configuration-guide/collections-api.html">Solr Collections API — asynchronous calls, REQUESTSTATUS and DELETESTATUS</a></li>
+  <li><a href="https://solr.apache.org/guide/solr/9_8/deployment-guide/shard-management.html">Solr Shard Management Commands — SPLITSHARD and DELETESHARD</a></li>
+  <li><a href="https://solr.apache.org/guide/solr/latest/deployment-guide/collection-management.html">Solr Collection Management — replica properties and REBALANCELEADERS</a></li>
+  <li><a href="https://solr.apache.org/guide/solr/latest/deployment-guide/solrcloud-distributed-requests.html">SolrCloud Distributed Requests</a></li>
+  <li><a href="https://solr.apache.org/guide/solr/latest/configuration-guide/commits-transaction-logs.html">Solr Commits, Transaction Logs and search visibility</a></li>
+</ul>
+
+<ac:structured-macro ac:name="tip" ac:schema-version="1" ac:macro-id="e77daf6b-6733-4bd1-a707-da62bd9d8cb8">
+  <ac:rich-text-body>
+    <p>Khi import vào Confluence, attach đúng bốn file <code>Detect Job.png</code>, <code>Split Shard Job.png</code>, <code>Clear Parent Topic Job.png</code> và <code>State Of Job.png</code> vào page để các <code>ri:attachment</code> render.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
